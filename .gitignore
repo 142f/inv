@@ -1,9 +1,43 @@
-# 忽略隐私配置文件
+# ==========================================
+# 隐私与敏感配置 (Privacy & Secrets)
+# ==========================================
 .env
+.env.local
+.env.*
+config/.env
+**/config/.env
+secrets.yaml
+credentials.json
+config/strategies.yaml
 
-# 忽略 Python 缓存
+# ==========================================
+# Python 环境与缓存 (Python Env & Cache)
+# ==========================================
 __pycache__/
 *.py[cod]
-
-# 忽略虚拟环境
+*$py.class
+.venv/
 venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# ==========================================
+# 日志与交易数据 (Logs & Data)
+# ==========================================
+*.log
+logs/
+**/logs/*.log
+*.csv
+*.sqlite3
+
+# ==========================================
+# 编译器与系统临时文件 (System & IDE)
+# ==========================================
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/settings.json
+.idea/
+*.tmp
+*.bak

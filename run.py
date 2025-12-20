@@ -4,12 +4,14 @@ import time
 import os
 import yaml
 from dotenv import load_dotenv
-from strategy_lib import GridStrategy
-from logger import Logger
+from core.strategy_lib import GridStrategy
+from core.logger import Logger
 
 load_dotenv()
 
-CONFIG_FILE = "strategies.yaml"
+# 使用绝对路径确保在任何目录下运行都能找到配置文件
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "config", "strategies.yaml")
 last_config_mtime = 0
 active_strategies = {} # 使用字典管理实例: {magic: strategy_instance}
 

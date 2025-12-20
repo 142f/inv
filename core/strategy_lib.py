@@ -1,7 +1,7 @@
 # strategy_lib.py
 import MetaTrader5 as mt5
 import time
-from logger import Logger
+from .logger import Logger
 
 class GridStrategy:
     def __init__(self, symbol, step, tp_dist, lot, magic, window=6, min_p=0, max_p=999999, enabled=True, use_atr=False, atr_period=14, atr_factor=1.0):
