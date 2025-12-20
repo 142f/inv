@@ -1,29 +1,9 @@
+# strategy_lib.py
 import MetaTrader5 as mt5
-import time
-import os
-from datetime import datetime
-from dotenv import load_dotenv
+from logger import Logger
 
-# 加载环境变量 (读取账号密码)
-load_dotenv()
-
-# ==========================================
-# 0. 日志工具类
-# ==========================================
-class Logger:
-    @staticmethod
-    def log(symbol, action, message):
-        """
-        统一日志格式: [时间] [品种] [动作] 消息内容
-        """
-        t = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"{t} | {symbol:<9} | {action:<10} | {message}")
-
-# ==========================================
-# 1. 网格策略类 (OOP 架构)
-# ==========================================
 class GridStrategy:
-    def __init__(self, symbol, step, tp_dist, lot, magic, window=6, min_p=0, max_p=999999):
+    def __init__(self, symbol, step, tp_dist, lot, magic, window=6, min_p=0, max_p=999999, enabled=True):
         """
         :param symbol: 交易品种 (如 BTCUSDc)
         :param step: 网格间距
@@ -33,6 +13,7 @@ class GridStrategy:
         :param window: 滑动窗口大小
         :param min_p: 价格运行下限 (用于范围网格)
         :param max_p: 价格运行上限 (用于范围网格)
+        :param enabled: 策略开关
         """
         self.symbol = symbol
         self.step = step
@@ -42,6 +23,7 @@ class GridStrategy:
         self.window = window
         self.min_price = min_p
         self.max_price = max_p
+        self.enabled = enabled
 
     def _place_buy_order(self, price):
         """内部方法：发送带止盈的买单"""
@@ -83,6 +65,9 @@ class GridStrategy:
 
     def update(self):
         """核心巡检逻辑：每轮循环执行一次"""
+        if not self.enabled:
+            return
+
         tick = mt5.symbol_info_tick(self.symbol)
         if not tick or tick.bid <= 0: return
         
@@ -157,55 +142,3 @@ class GridStrategy:
                     if dist > safe_zone:
                         Logger.log(self.symbol, "RM_FAR", f"Price: {o.price_open} | Dist: {dist:.2f}")
                         mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
-
-# ==========================================
-# 2. 主程序控制流
-# ==========================================
-def initialize_system():
-    # 从 .env 读取配置
-    acc_id_str = os.getenv("MT5_ACCOUNT_ID")
-    acc_id = int(acc_id_str) if acc_id_str else 0
-    pwd = os.getenv("MT5_PASSWORD")
-    srv = os.getenv("MT5_SERVER")
-    mt5_path = os.getenv("MT5_PATH")
-
-    # 初始化参数
-    init_params = {}
-    if mt5_path:
-        init_params["path"] = mt5_path
-
-    if not mt5.initialize(**init_params):
-        Logger.log("SYSTEM", "ERROR", "MT5 Init Failed")
-        return False
-    if not mt5.login(acc_id, password=pwd, server=srv):
-        Logger.log("SYSTEM", "ERROR", f"Login Failed: {mt5.last_error()}")
-        return False
-    return True
-
-if __name__ == "__main__":
-    if initialize_system():
-        # 实例化多套策略
-        strategies = [
-            # 策略 1: 之前的 BTCUSDc 动态滑动网格
-            GridStrategy(symbol="BTCUSDc", step=200.0, tp_dist=200.0, lot=0.03, magic=20251218),
-            
-            # 策略 2: 新增 XAUUSDc 范围网格 (4170-4400)
-            # 提示：黄金的 3 个点通常指 3.00 美元（对于 XAUUSDc 可能需要根据点位精度调整）
-            GridStrategy(symbol="XAUUSDc", step=3.0, tp_dist=3.0, lot=0.02, magic=20251219, 
-                         min_p=4170.0, max_p=4400.0)
-        ]
-
-        # 启动清理
-        for s in strategies:
-            mt5.symbol_select(s.symbol, True)
-            s.clear_old_orders()
-
-        Logger.log("SYSTEM", "START", "Multi-Strategy System Started")
-        try:
-            while True:
-                for s in strategies:
-                    s.update()
-                time.sleep(1) # 高频巡检
-        except KeyboardInterrupt:
-            Logger.log("SYSTEM", "STOP", "System Stopped")
-    mt5.shutdown()

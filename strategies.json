@@ -1,0 +1,20 @@
+[
+  {
+    "symbol": "BTCUSDc",
+    "step": 200.0,
+    "tp_dist": 200.0,
+    "lot": 0.03,
+    "magic": 20251218,
+    "enabled": true
+  },
+  {
+    "symbol": "XAUUSDc",
+    "step": 3.0,
+    "tp_dist": 3.0,
+    "lot": 0.02,
+    "magic": 20251219,
+    "min_p": 4170.0,
+    "max_p": 4400.0,
+    "enabled": true
+  }
+]
