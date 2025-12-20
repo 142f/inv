@@ -1,0 +1,46 @@
+# ==============================================================================
+# MT5 多品种网格策略标准化配置文件
+# 规范：所有策略实例共享完全一致的变量结构，方便代码通过 **kwargs 统一解析
+# ==============================================================================
+
+- # --- 策略 1：BTCUSDc (比特币滑动网格) ---
+  symbol: "BTCUSDc"
+  step: 120.0             # 网格间距
+  tp_dist: 150.0          # 止盈距离
+  lot: 0.03               # 下单手数
+  magic: 20251218         # 唯一识别码
+  window: 5               # 滑动窗口深度
+  min_p: 0.0              # 价格下限 (0代表不限制)
+  max_p: 1000000.0        # 价格上限
+  enabled: true           # 策略开关
+  use_atr: false          # 是否开启 ATR (BTC 建议先手动定死间距)
+  atr_period: 14          # ATR 周期
+  atr_factor: 1.0         # ATR 乘数
+
+- # --- 策略 2：XAUUSDc (黄金范围网格) ---
+  symbol: "XAUUSDc"
+  step: 2.5
+  tp_dist: 3.0
+  lot: 0.02
+  magic: 20251219
+  window: 5
+  min_p: 4170.0
+  max_p: 4400.0
+  enabled: true
+  use_atr: false
+  atr_period: 14
+  atr_factor: 1.0
+
+- # --- 策略 3：USDJPYc (美日高频对冲) ---
+  symbol: "USDJPYc"
+  step: 0.15
+  tp_dist: 0.2
+  lot: 0.02
+  magic: 20251221
+  window: 5
+  min_p: 154.0
+  max_p: 160.0
+  enabled: true
+  use_atr: true           # 开启 ATR 动态适应
+  atr_period: 14
+  atr_factor: 1.0

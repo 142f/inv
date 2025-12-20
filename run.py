@@ -2,22 +2,22 @@
 import MetaTrader5 as mt5
 import time
 import os
-import json
+import yaml
 from dotenv import load_dotenv
 from strategy_lib import GridStrategy
 from logger import Logger
 
 load_dotenv()
 
-CONFIG_FILE = "strategies.json"
+CONFIG_FILE = "strategies.yaml"
 last_config_mtime = 0
 active_strategies = {} # 使用字典管理实例: {magic: strategy_instance}
 
 def load_configs():
-    """从 JSON 加载配置清单"""
+    """从 YAML 加载配置清单"""
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            return yaml.safe_load(f)
     except Exception as e:
         Logger.log("SYSTEM", "ERROR", f"读取配置失败: {e}")
         return []

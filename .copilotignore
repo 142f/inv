@@ -1,0 +1,4 @@
+.env
+strategies.yaml
+__pycache__
+.venv
