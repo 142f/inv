@@ -9,12 +9,26 @@
   },
   {
     "symbol": "XAUUSDc",
-    "step": 3.0,
+    "step": 2.5,
     "tp_dist": 3.0,
     "lot": 0.02,
     "magic": 20251219,
     "min_p": 4170.0,
     "max_p": 4400.0,
     "enabled": true
+  },
+  {
+    "symbol": "USDJPYc",
+    "step": 0.15,
+    "tp_dist": 0.2,
+    "lot": 0.02,
+    "magic": 20251221,
+    "window": 5,
+    "min_p": 154.0,
+    "max_p": 160.0,
+    "enabled": true,
+    "use_atr": true,
+    "atr_period": 14,
+    "atr_factor": 1.0
   }
 ]

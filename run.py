@@ -57,6 +57,9 @@ def sync_strategies():
                 s.window = cfg.get('window', s.window)
                 s.min_price = cfg.get('min_p', s.min_price)
                 s.max_price = cfg.get('max_p', s.max_price)
+                s.use_atr = cfg.get('use_atr', s.use_atr)
+                s.atr_period = cfg.get('atr_period', s.atr_period)
+                s.atr_factor = cfg.get('atr_factor', s.atr_factor)
                 
                 Logger.log("SYSTEM", "UPDATE", f"已同步策略状态: {cfg['symbol']} (Enabled: {s.enabled})")
         
@@ -97,6 +100,13 @@ if __name__ == "__main__":
         
         try:
             while True:
+                # 全局熔断检查 (Circuit Breaker)
+                acc = mt5.account_info()
+                if acc and acc.margin_level < 200 and acc.margin_level > 0:
+                     Logger.log("SYSTEM", "HALT", f"保证金过低 ({acc.margin_level}%)，暂停运行")
+                     time.sleep(5)
+                     continue
+
                 # 每次循环开始前检查配置是否更新
                 sync_strategies()
                 
@@ -104,7 +114,7 @@ if __name__ == "__main__":
                 for magic, s in active_strategies.items():
                     s.update()
                 
-                time.sleep(1)
+                time.sleep(0.2) # 提高频率到 200ms
         except KeyboardInterrupt:
             Logger.log("SYSTEM", "STOP", "手动停止")
     mt5.shutdown()

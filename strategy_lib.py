@@ -4,19 +4,14 @@ import time
 from logger import Logger
 
 class GridStrategy:
-    def __init__(self, symbol, step, tp_dist, lot, magic, window=6, min_p=0, max_p=999999, enabled=True):
+    def __init__(self, symbol, step, tp_dist, lot, magic, window=6, min_p=0, max_p=999999, enabled=True, use_atr=False, atr_period=14, atr_factor=1.0):
         """
-        :param symbol: 交易品种 (如 BTCUSDc)
-        :param step: 网格间距
-        :param tp_dist: 止盈距离 (如 XAU 的 3 个点)
-        :param lot: 下单手数
-        :param magic: 脚本识别码 (必须唯一)
-        :param window: 滑动窗口大小
-        :param min_p: 价格运行下限 (用于范围网格)
-        :param max_p: 价格运行上限 (用于范围网格)
-        :param enabled: 策略开关
+        :param use_atr: 是否启用 ATR 自适应步长
+        :param atr_period: ATR 计算周期 (默认 14)
+        :param atr_factor: ATR 乘数 (Step = ATR * factor)
         """
         self.symbol = symbol
+        self.base_step = step # 保存初始步长
         self.step = step
         self.tp_dist = tp_dist
         self.lot = lot
@@ -26,6 +21,27 @@ class GridStrategy:
         self.max_price = max_p
         self.enabled = enabled
         self.pause_until = 0
+        self.use_atr = use_atr
+        self.atr_period = atr_period
+        self.atr_factor = atr_factor
+
+    def _calculate_atr(self):
+        """计算 ATR (简单移动平均算法)"""
+        # 获取足够的数据: period + 1 根 K 线 (M15 周期)
+        rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M15, 0, self.atr_period + 1)
+        if rates is None or len(rates) < self.atr_period + 1:
+            return None
+            
+        tr_sum = 0.0
+        for i in range(1, len(rates)):
+            high = rates[i]['high']
+            low = rates[i]['low']
+            close_prev = rates[i-1]['close']
+            
+            tr = max(high - low, abs(high - close_prev), abs(low - close_prev))
+            tr_sum += tr
+            
+        return tr_sum / self.atr_period
 
     def _is_market_open(self):
         """检查市场是否开放 (基于 Tick 时间)"""
@@ -95,6 +111,15 @@ class GridStrategy:
         # 市场活跃度检查 (Proactive Check)
         if not self._is_market_open():
             return
+
+        # --- ATR 自适应步长逻辑 ---
+        if self.use_atr:
+            atr = self._calculate_atr()
+            if atr:
+                # 动态调整步长，但保留最小值防止过小 (例如不小于 base_step 的 0.5 倍)
+                new_step = round(atr * self.atr_factor, 5)
+                # 限制步长范围，防止过大或过小
+                self.step = max(new_step, self.base_step * 0.5)
 
         tick = mt5.symbol_info_tick(self.symbol)
         if not tick or tick.bid <= 0: return
