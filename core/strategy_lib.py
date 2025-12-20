@@ -54,37 +54,58 @@ class GridStrategy:
 
     def _place_buy_order(self, price):
         """内部方法：发送带止盈的买单"""
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info: return
-        
-        digits = symbol_info.digits
-        price = round(float(price), digits)
-        tp = round(price + self.tp_dist, digits)
+        try:
+            symbol_info = mt5.symbol_info(self.symbol)
+            if not symbol_info:
+                Logger.log(self.symbol, "ERROR", f"无法获取 {self.symbol} 信息")
+                return None
+            
+            digits = symbol_info.digits
+            price = round(float(price), digits)
+            tp = round(price + self.tp_dist, digits)
 
-        request = {
-            "action": mt5.TRADE_ACTION_PENDING,
-            "symbol": self.symbol,
-            "volume": self.lot,
-            "type": mt5.ORDER_TYPE_BUY_LIMIT,
-            "price": price,
-            "tp": tp,
-            "magic": self.magic,
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        
-        result = mt5.order_send(request)
-        if result.retcode == 10030: # 填充模式兼容
-            request["type_filling"] = mt5.ORDER_FILLING_FOK
+            request = {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "symbol": self.symbol,
+                "volume": self.lot,
+                "type": mt5.ORDER_TYPE_BUY_LIMIT,
+                "price": price,
+                "tp": tp,
+                "magic": self.magic,
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
             result = mt5.order_send(request)
-        
-        if result.retcode == mt5.TRADE_RETCODE_DONE or result.retcode == mt5.TRADE_RETCODE_PLACED:
+            
+            # 填充模式兼容
+            if result.retcode == 10030: 
+                request["type_filling"] = mt5.ORDER_FILLING_FOK
+                result = mt5.order_send(request)
+            
+            # 统一错误处理
+            if result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+                self._handle_order_error(result.retcode, result.comment, price)
+                return None
+                
             Logger.log(self.symbol, "ORDER_SENT", f"Price: {price} | TP: {tp} | Magic: {self.magic}")
-        elif result.retcode == 10018: # MARKET_CLOSED
+            return result.order
+            
+        except Exception as e:
+            Logger.log(self.symbol, "EXCEPTION", f"下单异常: {str(e)}")
+            return None
+
+    def _handle_order_error(self, retcode, comment, price):
+        """统一处理订单错误"""
+        if retcode == 10018: # MARKET_CLOSED
             Logger.log(self.symbol, "SLEEP", "市场休市，暂停运行 5 分钟")
             self.pause_until = time.time() + 300
+        elif retcode == 10027: # REQUOTE / PRICE_CHANGED
+            Logger.log(self.symbol, "WARN", "价格已变更，请重试")
+        elif retcode == 10013: # INVALID_REQUEST
+            Logger.log(self.symbol, "ERROR", "无效请求参数")
         else:
-            Logger.log(self.symbol, "ORDER_FAIL", f"RC: {result.retcode} ({result.comment}) | Price: {price}")
+            Logger.log(self.symbol, "ORDER_FAIL", f"RC: {retcode} ({comment}) | Price: {price}")
 
     def clear_old_orders(self):
         """启动时清理旧网格挂单"""
@@ -132,12 +153,16 @@ class GridStrategy:
         # 计算基准网格线 (最近的整数网格)
         base_level = round(curr_price / self.step) * self.step
         
-        # 1. 获取当前属于本实例的挂单和持仓
+        # 1. 获取当前属于本实例的挂单和持仓 (优化：使用集合)
         orders = mt5.orders_get(symbol=self.symbol)
-        existing_prices = [round(o.price_open, 2) for o in orders if o.magic == self.magic] if orders else []
+        existing_prices = set()
+        if orders:
+            existing_prices = {round(o.price_open, 2) for o in orders if o.magic == self.magic}
         
         positions = mt5.positions_get(symbol=self.symbol)
-        existing_positions = [round(p.price_open, 2) for p in positions if p.magic == self.magic] if positions else []
+        existing_positions = set()
+        if positions:
+            existing_positions = {round(p.price_open, 2) for p in positions if p.magic == self.magic}
 
         # 2. 计算目标位 (智能滑动窗口)
         # 扩大搜索范围，确保能找到最近的 window 个网格

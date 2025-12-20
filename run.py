@@ -24,6 +24,30 @@ def load_configs():
         Logger.log("SYSTEM", "ERROR", f"读取配置失败: {e}")
         return []
 
+def validate_strategy_config(cfg):
+    """验证策略配置的有效性"""
+    required_fields = ['symbol', 'step', 'tp_dist', 'lot', 'magic']
+    
+    # 检查必填字段
+    for field in required_fields:
+        if field not in cfg:
+            raise ValueError(f"策略配置缺少必要字段: {field}")
+    
+    # 验证数值范围
+    if cfg.get('step', 0) <= 0:
+        raise ValueError("网格间距必须大于0")
+    
+    if cfg.get('lot', 0) <= 0:
+        raise ValueError("手数必须大于0")
+    
+    # 验证价格范围
+    min_p = cfg.get('min_p', 0)
+    max_p = cfg.get('max_p', 999999)
+    if min_p >= max_p:
+        raise ValueError(f"min_p({min_p}) 必须小于 max_p({max_p})")
+    
+    return True
+
 def sync_strategies():
     """同步策略实例：热加载核心"""
     global last_config_mtime
@@ -41,6 +65,12 @@ def sync_strategies():
         
         # 1. 更新或新增策略
         for cfg in new_configs:
+            try:
+                validate_strategy_config(cfg)
+            except ValueError as e:
+                Logger.log("SYSTEM", "CONFIG_ERROR", f"配置验证失败: {e}")
+                continue
+
             m = cfg['magic']
             if m not in active_strategies:
                 Logger.log("SYSTEM", "ADD", f"增加新策略: {cfg['symbol']} (Magic: {m})")
