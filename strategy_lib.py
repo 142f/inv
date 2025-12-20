@@ -1,5 +1,6 @@
 # strategy_lib.py
 import MetaTrader5 as mt5
+import time
 from logger import Logger
 
 class GridStrategy:
@@ -24,6 +25,16 @@ class GridStrategy:
         self.min_price = min_p
         self.max_price = max_p
         self.enabled = enabled
+        self.pause_until = 0
+
+    def _is_market_open(self):
+        """检查市场是否开放 (基于 Tick 时间)"""
+        tick = mt5.symbol_info_tick(self.symbol)
+        if not tick: return False
+        # 如果最后一次 Tick 距离现在超过 10 分钟 (600秒)，认为休市
+        if abs(time.time() - tick.time) > 600:
+            return False
+        return True
 
     def _place_buy_order(self, price):
         """内部方法：发送带止盈的买单"""
@@ -51,8 +62,13 @@ class GridStrategy:
             request["type_filling"] = mt5.ORDER_FILLING_FOK
             result = mt5.order_send(request)
         
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
+        if result.retcode == mt5.TRADE_RETCODE_DONE or result.retcode == mt5.TRADE_RETCODE_PLACED:
             Logger.log(self.symbol, "ORDER_SENT", f"Price: {price} | TP: {tp} | Magic: {self.magic}")
+        elif result.retcode == 10018: # MARKET_CLOSED
+            Logger.log(self.symbol, "SLEEP", "市场休市，暂停运行 5 分钟")
+            self.pause_until = time.time() + 300
+        else:
+            Logger.log(self.symbol, "ORDER_FAIL", f"RC: {result.retcode} ({result.comment}) | Price: {price}")
 
     def clear_old_orders(self):
         """启动时清理旧网格挂单"""
@@ -60,12 +76,24 @@ class GridStrategy:
         if orders:
             for o in orders:
                 if o.magic == self.magic:
-                    mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                    res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                    if res.retcode == 10018: # MARKET_CLOSED
+                        Logger.log(self.symbol, "WARN", "市场休市，无法撤单，暂停运行 5 分钟")
+                        self.pause_until = time.time() + 300
+                        return
             Logger.log(self.symbol, "CLEANUP", "History orders cleared")
 
     def update(self):
         """核心巡检逻辑：每轮循环执行一次"""
         if not self.enabled:
+            return
+            
+        # 休市暂停检查 (Error Backoff)
+        if time.time() < self.pause_until:
+            return
+
+        # 市场活跃度检查 (Proactive Check)
+        if not self._is_market_open():
             return
 
         tick = mt5.symbol_info_tick(self.symbol)

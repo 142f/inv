@@ -42,8 +42,11 @@ def sync_strategies():
             m = cfg['magic']
             if m not in active_strategies:
                 Logger.log("SYSTEM", "ADD", f"增加新策略: {cfg['symbol']} (Magic: {m})")
-                active_strategies[m] = GridStrategy(**cfg)
+                strategy = GridStrategy(**cfg)
+                active_strategies[m] = strategy
                 mt5.symbol_select(cfg['symbol'], True)
+                # 启动时清理旧挂单
+                strategy.clear_old_orders()
             else:
                 # 更新已有策略的开关状态和其他参数
                 s = active_strategies[m]
