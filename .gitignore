@@ -10,6 +10,8 @@ secrets.yaml
 credentials.json
 config/strategies.yaml
 
+encrypt_setup.py
+.secret.key
 # ==========================================
 # Python 环境与缓存 (Python Env & Cache)
 # ==========================================

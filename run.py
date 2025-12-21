@@ -6,6 +6,7 @@ import yaml
 from dotenv import load_dotenv
 from core.strategy_lib import GridStrategy
 from core.logger import Logger
+from core.security import Security
 
 load_dotenv()
 
@@ -14,6 +15,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config", "strategies.yaml")
 last_config_mtime = 0
 active_strategies = {} # 使用字典管理实例: {magic: strategy_instance}
+security = Security() # 初始化安全模块
 
 def load_configs():
     """从 YAML 加载配置清单"""
@@ -106,14 +108,34 @@ def sync_strategies():
 def initialize_system():
     # 从 .env 读取配置
     acc_id_str = os.getenv("MT5_ACCOUNT_ID")
-    acc_id = int(acc_id_str) if acc_id_str else 0
     pwd = os.getenv("MT5_PASSWORD")
     srv = os.getenv("MT5_SERVER")
     mt5_path = os.getenv("MT5_PATH")
+    
+    # 尝试解密 (如果解密失败或不是加密串，decrypt 会返回 None 或原样，这里我们假设如果解密失败就用原值)
+    # 但为了安全，我们应该先判断是否是加密串。
+    # 简单起见，我们尝试解密，如果解密成功则使用解密后的值，否则使用原值
+    # 注意：Security.decrypt 如果解密失败会返回 None
+    
+    decrypted_acc = security.decrypt(acc_id_str)
+    if decrypted_acc:
+        acc_id_str = decrypted_acc
+        
+    decrypted_pwd = security.decrypt(pwd)
+    if decrypted_pwd:
+        pwd = decrypted_pwd
+        
+    decrypted_srv = security.decrypt(srv)
+    if decrypted_srv:
+        srv = decrypted_srv
+
+    acc_id = int(acc_id_str) if acc_id_str and acc_id_str.isdigit() else 0
 
     # 初始化参数
     init_params = {}
     if mt5_path:
+        # 清理路径中的引号
+        mt5_path = mt5_path.strip('"').strip("'")
         init_params["path"] = mt5_path
 
     if not mt5.initialize(**init_params):
