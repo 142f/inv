@@ -147,8 +147,8 @@ class GridStrategy:
                         return
             Logger.log(self.symbol, "CLEANUP", "历史挂单已清理")
 
-    def update(self):
-        """核心巡检逻辑：每轮循环执行一次"""
+    def update(self, orders_list=None, positions_list=None):
+        """核心巡检逻辑：改为接收外部注入的数据"""
         if not self.enabled:
             return
             
@@ -181,12 +181,14 @@ class GridStrategy:
         base_level = round(curr_price / self.step) * self.step
         
         # 1. 获取当前属于本实例的挂单和持仓 (优化：使用集合)
-        orders = mt5.orders_get(symbol=self.symbol)
+        # 使用注入的数据，如果未传入（如单体测试时）则回退到原逻辑
+        orders = orders_list if orders_list is not None else mt5.orders_get(symbol=self.symbol)
+        positions = positions_list if positions_list is not None else mt5.positions_get(symbol=self.symbol)
+
         existing_prices = set()
         if orders:
             existing_prices = {round(o.price_open, 2) for o in orders if o.magic == self.magic}
         
-        positions = mt5.positions_get(symbol=self.symbol)
         existing_positions = set()
         if positions:
             existing_positions = {round(p.price_open, 2) for p in positions if p.magic == self.magic}

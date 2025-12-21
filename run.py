@@ -4,6 +4,7 @@ import time
 import os
 import yaml
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor
 from core.strategy_lib import GridStrategy
 from core.logger import Logger
 from core.security import Security
@@ -138,11 +139,31 @@ def initialize_system():
         mt5_path = mt5_path.strip('"').strip("'")
         init_params["path"] = mt5_path
 
-    if not mt5.initialize(**init_params):
-        Logger.log("SYSTEM", "ERROR", "MT5 Init Failed")
+    # 尝试初始化
+    init_success = False
+    if mt5.initialize(**init_params):
+        init_success = True
+    else:
+        Logger.log("SYSTEM", "WARN", f"指定路径初始化失败: {mt5.last_error()}，尝试默认初始化...")
+        if mt5.initialize():
+            init_success = True
+    
+    if not init_success:
+        Logger.log("SYSTEM", "ERROR", f"MT5 Init Failed: {mt5.last_error()}")
         return False
+
+    # --- 智能登录逻辑 ---
+    # 1. 检查当前终端是否已经登录了正确的账号
+    current_account_info = mt5.account_info()
+    if current_account_info and current_account_info.login == acc_id:
+        Logger.log("SYSTEM", "INFO", f"检测到终端已登录账号 {acc_id}，跳过重复登录")
+        return True
+
+    # 2. 如果未登录或账号不一致，则尝试登录
+    # 注意：如果密码错误，这一步会导致终端掉线
+    Logger.log("SYSTEM", "INFO", f"正在尝试登录账号 {acc_id}...")
     if not mt5.login(acc_id, password=pwd, server=srv):
-        Logger.log("SYSTEM", "ERROR", f"Login Failed: {mt5.last_error()}")
+        Logger.log("SYSTEM", "ERROR", f"Login Failed: {mt5.last_error()} (请检查 .env 中的账号/密码/服务器)")
         return False
     return True
 
@@ -152,6 +173,9 @@ if __name__ == "__main__":
         # 首次加载
         sync_strategies()
         
+        # 创建全局线程池
+        executor = ThreadPoolExecutor(max_workers=4)
+
         try:
             while True:
                 # 全局熔断检查 (Circuit Breaker)
@@ -164,9 +188,33 @@ if __name__ == "__main__":
                 # 每次循环开始前检查配置是否更新
                 sync_strategies()
                 
-                # 执行所有活跃策略的巡检
+                # --- 新增：批处理 I/O ---
+                # 一次性拿回所有挂单和持仓
+                all_orders = mt5.orders_get()
+                all_positions = mt5.positions_get()
+
+                # 根据 magic 分组，避免在策略内部循环查找，复杂度由 O(N^2) 降为 O(N)
+                orders_by_magic = {}
+                for o in (all_orders or []):
+                    orders_by_magic.setdefault(o.magic, []).append(o)
+
+                positions_by_magic = {}
+                for p in (all_positions or []):
+                    positions_by_magic.setdefault(p.magic, []).append(p)
+
+                # 执行所有活跃策略的巡检 (并发版)
+                futures = []
                 for magic, s in active_strategies.items():
-                    s.update()
+                    # 并发执行逻辑
+                    f = executor.submit(
+                        s.update, 
+                        orders_list=orders_by_magic.get(magic, []), 
+                        positions_list=positions_by_magic.get(magic, [])
+                    )
+                    futures.append(f)
+
+                # 等待本轮所有策略处理完毕，确保下一轮循环开始前数据是同步的
+                for f in futures: f.result()
                 
                 time.sleep(0.2) # 提高频率到 200ms
         except KeyboardInterrupt:
