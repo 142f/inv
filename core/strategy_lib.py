@@ -90,30 +90,22 @@ class GridStrategy:
             
             # 统一错误处理
             if result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                # 如果是价格变动，尝试重试一次
-                if result.retcode == 10027:
+                # 如果是价格变动 (Requote)，尝试重试一次
+                if result.retcode == 10004: # REQUOTE
                     Logger.log(self.symbol, "WARN", "价格变动，正在重试...")
                     time.sleep(0.1)
-                    # 重新获取价格并重试 (简单递归一次，不无限递归)
-                    # 注意：这里为了简单直接重试，实际生产中最好有计数器
-                    # 但由于外层有 update 循环，这里不递归也可以，
-                    # 不过为了提高成交率，我们再试一次
+                    # 重新获取价格并重试
                     tick = mt5.symbol_info_tick(self.symbol)
                     if tick:
-                        # 如果是限价单，价格其实是固定的，重试通常没用，除非是市价单。
-                        # 但对于 LIMIT 单，10027 通常是因为当前价格已经越过了 Limit 价格导致变成了市价单但没给滑点？
-                        # 或者是因为行情波动太快，服务器端检查时的价格和客户端看到的不一致。
-                        # 加了 deviation 应该能解决大部分问题。
-                        # 这里我们只做简单的重试，不递归调用自身以免死循环
                         result = mt5.order_send(request)
                         if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                            Logger.log(self.symbol, "ORDER_SENT", f"Price: {price} | TP: {tp} | Magic: {self.magic} (Retry)")
+                            Logger.log(self.symbol, "ORDER_SENT", f"价格: {price:<8} | 止盈: {tp:<8} | Magic: {self.magic} (重试)")
                             return result.order
 
                 self._handle_order_error(result.retcode, result.comment, price)
                 return None
                 
-            Logger.log(self.symbol, "ORDER_SENT", f"Price: {price} | TP: {tp} | Magic: {self.magic}")
+            Logger.log(self.symbol, "ORDER_SENT", f"价格: {price:<8} | 止盈: {tp:<8} | Magic: {self.magic}")
             return result.order
             
         except Exception as e:
@@ -125,9 +117,11 @@ class GridStrategy:
         if retcode == 10018: # MARKET_CLOSED
             Logger.log(self.symbol, "SLEEP", "市场休市，暂停运行 5 分钟")
             self.pause_until = time.time() + 300
-        elif retcode == 10027: # REQUOTE / PRICE_CHANGED
-            Logger.log(self.symbol, "WARN", "价格已变更，请重试")
-            # 暂停 1 秒，防止瞬间多次重试
+        elif retcode == 10027: # CLIENT_DISABLES_AT
+            Logger.log(self.symbol, "CRITICAL", "MT5 终端 '自动交易' (Algo Trading) 未开启！请在 MT5 软件上方点击 'Algo Trading' 按钮。")
+            self.enabled = False # 必须停止，否则会死循环
+        elif retcode == 10004: # REQUOTE
+            Logger.log(self.symbol, "WARN", "价格重新报价 (Requote)，稍后重试")
             self.pause_until = time.time() + 1
         elif retcode == 10013: # INVALID_REQUEST
             Logger.log(self.symbol, "ERROR", "无效请求参数")
@@ -136,7 +130,7 @@ class GridStrategy:
             Logger.log(self.symbol, "ERROR", "无效手数")
             self.enabled = False
         else:
-            Logger.log(self.symbol, "ORDER_FAIL", f"RC: {retcode} ({comment}) | Price: {price}")
+            Logger.log(self.symbol, "ORDER_FAIL", f"RC: {retcode} ({comment}) | 价格: {price}")
             # 通用错误暂停 5 秒，防止刷屏
             self.pause_until = time.time() + 5
 
@@ -151,7 +145,7 @@ class GridStrategy:
                         Logger.log(self.symbol, "WARN", "市场休市，无法撤单，暂停运行 5 分钟")
                         self.pause_until = time.time() + 300
                         return
-            Logger.log(self.symbol, "CLEANUP", "History orders cleared")
+            Logger.log(self.symbol, "CLEANUP", "历史挂单已清理")
 
     def update(self):
         """核心巡检逻辑：每轮循环执行一次"""
@@ -238,7 +232,7 @@ class GridStrategy:
             # 关键逻辑：只有当 (现价 - 目标价) > 最小间距 时才补单
             # 这实现了"价格超过网格一定距离后才重新挂"的需求
             if (curr_price - level) > min_gap:
-                Logger.log(self.symbol, "FILL_GRID", f"Level: {level} | Curr: {curr_price}")
+                Logger.log(self.symbol, "FILL_GRID", f"目标价: {level:<10} | 当前价: {curr_price}")
                 self._place_buy_order(level)
 
         # 4. 滑动清理逻辑 (优化版)
@@ -251,7 +245,7 @@ class GridStrategy:
                     safe_zone = (self.window + 3) * self.step
                     
                     if dist > safe_zone:
-                        Logger.log(self.symbol, "RM_FAR", f"Price: {o.price_open} | Dist: {dist:.2f}")
+                        Logger.log(self.symbol, "RM_FAR", f"挂单价: {o.price_open:<10} | 距离值: {dist:.2f}")
                         res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                         if res.retcode != mt5.TRADE_RETCODE_DONE:
                             Logger.log(self.symbol, "ERROR", f"删除失败: {res.comment} ({res.retcode})")
