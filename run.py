@@ -23,10 +23,11 @@ def load_configs():
     """从 YAML 加载配置清单"""
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f)
+            data = yaml.safe_load(f)
+            return data if data is not None else []
     except Exception as e:
         Logger.log("SYSTEM", "ERROR", f"读取配置失败: {e}")
-        return []
+        return None
 
 def validate_strategy_config(cfg):
     """验证策略配置的有效性"""
@@ -63,7 +64,7 @@ def sync_strategies():
     if current_mtime > last_config_mtime:
         Logger.log("SYSTEM", "RELOAD", "检测到配置变更，正在同步策略...")
         new_configs = load_configs()
-        if not new_configs: return # 如果读取失败或为空，不进行更新
+        if new_configs is None: return # 如果读取失败，不进行更新
 
         new_magics = [cfg['magic'] for cfg in new_configs]
         
@@ -142,15 +143,23 @@ def initialize_system():
     # --- 智能登录逻辑 ---
     # 1. 检查当前终端是否已经登录了正确的账号
     current_account_info = mt5.account_info()
-    if current_account_info and current_account_info.login == acc_id:
+    if acc_id != 0 and current_account_info and current_account_info.login == acc_id:
         Logger.log("SYSTEM", "INFO", f"检测到终端已登录账号 {acc_id}，跳过重复登录")
         return True
 
     # 2. 如果未登录或账号不一致，则尝试登录
-    Logger.log("SYSTEM", "INFO", f"正在尝试登录账号 {acc_id}...")
-    if not mt5.login(acc_id, password=pwd, server=srv):
-        Logger.log("SYSTEM", "ERROR", f"Login Failed: {mt5.last_error()} (请检查 .env 中的账号/密码/服务器)")
-        return False
+    if acc_id != 0:
+        Logger.log("SYSTEM", "INFO", f"正在尝试登录账号 {acc_id}...")
+        if not mt5.login(acc_id, password=pwd, server=srv):
+            Logger.log("SYSTEM", "ERROR", f"Login Failed: {mt5.last_error()} (请检查 .env 中的账号/密码/服务器)")
+            return False
+    else:
+        if current_account_info:
+            Logger.log("SYSTEM", "WARN", f"未配置指定账号，使用当前终端账号: {current_account_info.login}")
+        else:
+            Logger.log("SYSTEM", "ERROR", "未配置账号且当前终端未登录")
+            return False
+            
     return True
 
 if __name__ == "__main__":

@@ -79,14 +79,14 @@ class GridStrategy:
                 "deviation": 20,  # 允许 20 点的滑点
                 "magic": self.magic,
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
+                "type_filling": mt5.ORDER_FILLING_RETURN,
             }
             
             result = mt5.order_send(request)
             
             # 填充模式兼容
             if result.retcode == 10030: 
-                request["type_filling"] = mt5.ORDER_FILLING_FOK
+                del request["type_filling"]
                 result = mt5.order_send(request)
             
             # 统一错误处理
