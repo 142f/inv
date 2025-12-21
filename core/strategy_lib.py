@@ -1,6 +1,7 @@
 # strategy_lib.py
 import MetaTrader5 as mt5
 import time
+import numpy as np
 from .logger import Logger
 
 class GridStrategy:
@@ -26,26 +27,26 @@ class GridStrategy:
         self.atr_factor = atr_factor
 
     def _calculate_atr(self):
-        """计算 ATR (简单移动平均算法)"""
+        """计算 ATR (简单移动平均算法) - 向量化优化"""
         # 获取足够的数据: period + 1 根 K 线 (M15 周期)
         rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M15, 0, self.atr_period + 1)
         if rates is None or len(rates) < self.atr_period + 1:
             return None
             
-        tr_sum = 0.0
-        for i in range(1, len(rates)):
-            high = rates[i]['high']
-            low = rates[i]['low']
-            close_prev = rates[i-1]['close']
-            
-            tr = max(high - low, abs(high - close_prev), abs(low - close_prev))
-            tr_sum += tr
-            
-        return tr_sum / self.atr_period
+        # 使用 numpy 向量化计算 (mt5 返回的是 numpy 结构化数组)
+        high = rates['high'][1:]
+        low = rates['low'][1:]
+        close_prev = rates['close'][:-1]
+        
+        tr = np.maximum(high - low, np.abs(high - close_prev))
+        tr = np.maximum(tr, np.abs(low - close_prev))
+        
+        return np.mean(tr)
 
-    def _is_market_open(self):
+    def _is_market_open(self, tick=None):
         """检查市场是否开放 (基于 Tick 时间)"""
-        tick = mt5.symbol_info_tick(self.symbol)
+        if tick is None:
+            tick = mt5.symbol_info_tick(self.symbol)
         if not tick: return False
         # 如果最后一次 Tick 距离现在超过 10 分钟 (600秒)，认为休市
         if abs(time.time() - tick.time) > 600:
@@ -156,8 +157,12 @@ class GridStrategy:
         if time.time() < self.pause_until:
             return
 
+        # 获取一次 tick 和 symbol_info，后续复用
+        tick = mt5.symbol_info_tick(self.symbol)
+        if not tick or tick.bid <= 0: return
+
         # 市场活跃度检查 (Proactive Check)
-        if not self._is_market_open():
+        if not self._is_market_open(tick):
             return
 
         # --- ATR 自适应步长逻辑 ---
@@ -168,9 +173,6 @@ class GridStrategy:
                 new_step = round(atr * self.atr_factor, 5)
                 # 限制步长范围，防止过大或过小
                 self.step = max(new_step, self.base_step * 0.5)
-
-        tick = mt5.symbol_info_tick(self.symbol)
-        if not tick or tick.bid <= 0: return
         
         curr_price = tick.bid
         # 边界检查：如果现价不在设定的总范围内，不进行操作
@@ -182,16 +184,20 @@ class GridStrategy:
         
         # 1. 获取当前属于本实例的挂单和持仓 (优化：使用集合)
         # 使用注入的数据，如果未传入（如单体测试时）则回退到原逻辑
-        orders = orders_list if orders_list is not None else mt5.orders_get(symbol=self.symbol)
-        positions = positions_list if positions_list is not None else mt5.positions_get(symbol=self.symbol)
-
-        existing_prices = set()
-        if orders:
-            existing_prices = {round(o.price_open, 2) for o in orders if o.magic == self.magic}
+        if orders_list is not None:
+            orders = orders_list
+            # 既然是注入的，说明已经按 magic 分组了，无需再次检查 magic
+            existing_prices = {round(o.price_open, 2) for o in orders}
+        else:
+            orders = mt5.orders_get(symbol=self.symbol)
+            existing_prices = {round(o.price_open, 2) for o in orders if o.magic == self.magic} if orders else set()
         
-        existing_positions = set()
-        if positions:
-            existing_positions = {round(p.price_open, 2) for p in positions if p.magic == self.magic}
+        if positions_list is not None:
+            positions = positions_list
+            existing_positions = {round(p.price_open, 2) for p in positions}
+        else:
+            positions = mt5.positions_get(symbol=self.symbol)
+            existing_positions = {round(p.price_open, 2) for p in positions if p.magic == self.magic} if positions else set()
 
         # 2. 计算目标位 (智能滑动窗口)
         # 扩大搜索范围，确保能找到最近的 window 个网格

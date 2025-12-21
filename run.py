@@ -5,6 +5,7 @@ import os
 import yaml
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
 from core.strategy_lib import GridStrategy
 from core.logger import Logger
 from core.security import Security
@@ -113,42 +114,28 @@ def initialize_system():
     srv = os.getenv("MT5_SERVER")
     mt5_path = os.getenv("MT5_PATH")
     
-    # 尝试解密 (如果解密失败或不是加密串，decrypt 会返回 None 或原样，这里我们假设如果解密失败就用原值)
-    # 但为了安全，我们应该先判断是否是加密串。
-    # 简单起见，我们尝试解密，如果解密成功则使用解密后的值，否则使用原值
-    # 注意：Security.decrypt 如果解密失败会返回 None
-    
-    decrypted_acc = security.decrypt(acc_id_str)
-    if decrypted_acc:
-        acc_id_str = decrypted_acc
+    # 尝试解密
+    if acc_id_str and acc_id_str.startswith("gAAAA"):
+        decrypted_acc = security.decrypt(acc_id_str)
+        if decrypted_acc: acc_id_str = decrypted_acc
         
-    decrypted_pwd = security.decrypt(pwd)
-    if decrypted_pwd:
-        pwd = decrypted_pwd
-        
-    decrypted_srv = security.decrypt(srv)
-    if decrypted_srv:
-        srv = decrypted_srv
+    if pwd and pwd.startswith("gAAAA"):
+        decrypted_pwd = security.decrypt(pwd)
+        if decrypted_pwd: pwd = decrypted_pwd
+            
+    if srv and srv.startswith("gAAAA"):
+        decrypted_srv = security.decrypt(srv)
+        if decrypted_srv: srv = decrypted_srv
 
     acc_id = int(acc_id_str) if acc_id_str and acc_id_str.isdigit() else 0
 
     # 初始化参数
     init_params = {}
     if mt5_path:
-        # 清理路径中的引号
-        mt5_path = mt5_path.strip('"').strip("'")
-        init_params["path"] = mt5_path
+        init_params["path"] = mt5_path.strip().strip('"').strip("'").strip()
 
     # 尝试初始化
-    init_success = False
-    if mt5.initialize(**init_params):
-        init_success = True
-    else:
-        Logger.log("SYSTEM", "WARN", f"指定路径初始化失败: {mt5.last_error()}，尝试默认初始化...")
-        if mt5.initialize():
-            init_success = True
-    
-    if not init_success:
+    if not mt5.initialize(**init_params) and not mt5.initialize():
         Logger.log("SYSTEM", "ERROR", f"MT5 Init Failed: {mt5.last_error()}")
         return False
 
@@ -160,7 +147,6 @@ def initialize_system():
         return True
 
     # 2. 如果未登录或账号不一致，则尝试登录
-    # 注意：如果密码错误，这一步会导致终端掉线
     Logger.log("SYSTEM", "INFO", f"正在尝试登录账号 {acc_id}...")
     if not mt5.login(acc_id, password=pwd, server=srv):
         Logger.log("SYSTEM", "ERROR", f"Login Failed: {mt5.last_error()} (请检查 .env 中的账号/密码/服务器)")
@@ -194,13 +180,15 @@ if __name__ == "__main__":
                 all_positions = mt5.positions_get()
 
                 # 根据 magic 分组，避免在策略内部循环查找，复杂度由 O(N^2) 降为 O(N)
-                orders_by_magic = {}
-                for o in (all_orders or []):
-                    orders_by_magic.setdefault(o.magic, []).append(o)
+                orders_by_magic = defaultdict(list)
+                if all_orders:
+                    for o in all_orders:
+                        orders_by_magic[o.magic].append(o)
 
-                positions_by_magic = {}
-                for p in (all_positions or []):
-                    positions_by_magic.setdefault(p.magic, []).append(p)
+                positions_by_magic = defaultdict(list)
+                if all_positions:
+                    for p in all_positions:
+                        positions_by_magic[p.magic].append(p)
 
                 # 执行所有活跃策略的巡检 (并发版)
                 futures = []
@@ -208,8 +196,8 @@ if __name__ == "__main__":
                     # 并发执行逻辑
                     f = executor.submit(
                         s.update, 
-                        orders_list=orders_by_magic.get(magic, []), 
-                        positions_list=positions_by_magic.get(magic, [])
+                        orders_list=orders_by_magic[magic], 
+                        positions_list=positions_by_magic[magic]
                     )
                     futures.append(f)
 
