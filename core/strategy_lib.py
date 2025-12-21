@@ -55,6 +55,10 @@ class GridStrategy:
     def _place_buy_order(self, price):
         """内部方法：发送带止盈的买单"""
         try:
+            # 重新获取最新 tick，减少时间差
+            tick = mt5.symbol_info_tick(self.symbol)
+            if not tick: return None
+            
             symbol_info = mt5.symbol_info(self.symbol)
             if not symbol_info:
                 Logger.log(self.symbol, "ERROR", f"无法获取 {self.symbol} 信息")
@@ -71,6 +75,7 @@ class GridStrategy:
                 "type": mt5.ORDER_TYPE_BUY_LIMIT,
                 "price": price,
                 "tp": tp,
+                "deviation": 20,  # 允许 20 点的滑点
                 "magic": self.magic,
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
@@ -85,6 +90,26 @@ class GridStrategy:
             
             # 统一错误处理
             if result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+                # 如果是价格变动，尝试重试一次
+                if result.retcode == 10027:
+                    Logger.log(self.symbol, "WARN", "价格变动，正在重试...")
+                    time.sleep(0.1)
+                    # 重新获取价格并重试 (简单递归一次，不无限递归)
+                    # 注意：这里为了简单直接重试，实际生产中最好有计数器
+                    # 但由于外层有 update 循环，这里不递归也可以，
+                    # 不过为了提高成交率，我们再试一次
+                    tick = mt5.symbol_info_tick(self.symbol)
+                    if tick:
+                        # 如果是限价单，价格其实是固定的，重试通常没用，除非是市价单。
+                        # 但对于 LIMIT 单，10027 通常是因为当前价格已经越过了 Limit 价格导致变成了市价单但没给滑点？
+                        # 或者是因为行情波动太快，服务器端检查时的价格和客户端看到的不一致。
+                        # 加了 deviation 应该能解决大部分问题。
+                        # 这里我们只做简单的重试，不递归调用自身以免死循环
+                        result = mt5.order_send(request)
+                        if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+                            Logger.log(self.symbol, "ORDER_SENT", f"Price: {price} | TP: {tp} | Magic: {self.magic} (Retry)")
+                            return result.order
+
                 self._handle_order_error(result.retcode, result.comment, price)
                 return None
                 
@@ -102,10 +127,18 @@ class GridStrategy:
             self.pause_until = time.time() + 300
         elif retcode == 10027: # REQUOTE / PRICE_CHANGED
             Logger.log(self.symbol, "WARN", "价格已变更，请重试")
+            # 暂停 1 秒，防止瞬间多次重试
+            self.pause_until = time.time() + 1
         elif retcode == 10013: # INVALID_REQUEST
             Logger.log(self.symbol, "ERROR", "无效请求参数")
+            self.enabled = False # 致命错误，停止策略
+        elif retcode == 10014: # INVALID_VOLUME
+            Logger.log(self.symbol, "ERROR", "无效手数")
+            self.enabled = False
         else:
             Logger.log(self.symbol, "ORDER_FAIL", f"RC: {retcode} ({comment}) | Price: {price}")
+            # 通用错误暂停 5 秒，防止刷屏
+            self.pause_until = time.time() + 5
 
     def clear_old_orders(self):
         """启动时清理旧网格挂单"""
@@ -219,4 +252,8 @@ class GridStrategy:
                     
                     if dist > safe_zone:
                         Logger.log(self.symbol, "RM_FAR", f"Price: {o.price_open} | Dist: {dist:.2f}")
-                        mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                        res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                        if res.retcode != mt5.TRADE_RETCODE_DONE:
+                            Logger.log(self.symbol, "ERROR", f"删除失败: {res.comment} ({res.retcode})")
+                            # 删除失败也暂停一下，防止死循环尝试删除
+                            self.pause_until = time.time() + 5
