@@ -12,19 +12,58 @@ class GridStrategy:
         :param atr_factor: ATR 乘数 (Step = ATR * factor)
         """
         self.symbol = symbol
-        self.base_step = step # 保存初始步长
-        self.step = step
-        self.tp_dist = tp_dist
-        self.lot = lot
-        self.magic = magic
-        self.window = window
-        self.min_price = min_p
-        self.max_price = max_p
+        self.base_step = float(step) # 保存初始步长
+        self.step = float(step)
+        self.tp_dist = float(tp_dist)
+        self.lot = float(lot)
+        self.magic = int(magic)
+        self.window = int(window)
+        self.min_price = float(min_p)
+        self.max_price = float(max_p)
         self.enabled = enabled
         self.pause_until = 0
         self.use_atr = use_atr
         self.atr_period = atr_period
         self.atr_factor = atr_factor
+        
+        # [优化] 缓存静态 Symbol 信息
+        self._cache_symbol_info()
+
+    def _cache_symbol_info(self):
+        info = mt5.symbol_info(self.symbol)
+        if info:
+            self.digits = info.digits
+            self.point = info.point
+            self.stop_level = info.trade_stops_level * info.point
+            self.vol_min = info.volume_min
+            self.vol_max = info.volume_max
+            self.vol_step = info.volume_step
+            self.initialized = True
+        else:
+            self.digits = 2
+            self.point = 0.01
+            self.stop_level = 0
+            self.vol_min = 0.01
+            self.vol_max = 100
+            self.vol_step = 0.01
+            self.initialized = False
+            Logger.log(self.symbol, "WARN", "初始化获取品种信息失败，使用默认值")
+
+    def _normalize_price(self, price):
+        return round(price, self.digits)
+
+    def _normalize_volume(self, vol):
+        # 简单的步长取整
+        if self.vol_step > 0:
+            steps = round(vol / self.vol_step)
+            vol = steps * self.vol_step
+        return round(max(self.vol_min, min(self.vol_max, vol)), 2)
+
+    def _get_grid_level(self, price):
+        """[优化] 锚定网格计算"""
+        if self.step <= 0: return price
+        # 默认锚点为 0，即绝对网格
+        return round(price / self.step) * self.step
 
     def _calculate_atr(self):
         """计算 ATR (简单移动平均算法) - 向量化优化"""
@@ -56,23 +95,15 @@ class GridStrategy:
     def _place_buy_order(self, price):
         """内部方法：发送带止盈的买单"""
         try:
-            # 重新获取最新 tick，减少时间差
-            tick = mt5.symbol_info_tick(self.symbol)
-            if not tick: return None
-            
-            symbol_info = mt5.symbol_info(self.symbol)
-            if not symbol_info:
-                Logger.log(self.symbol, "ERROR", f"无法获取 {self.symbol} 信息")
-                return None
-            
-            digits = symbol_info.digits
-            price = round(float(price), digits)
-            tp = round(price + self.tp_dist, digits)
+            # 使用缓存的 digits
+            price = self._normalize_price(price)
+            tp = self._normalize_price(price + self.tp_dist)
+            vol = self._normalize_volume(self.lot)
 
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
                 "symbol": self.symbol,
-                "volume": self.lot,
+                "volume": vol,
                 "type": mt5.ORDER_TYPE_BUY_LIMIT,
                 "price": price,
                 "tp": tp,
@@ -98,6 +129,7 @@ class GridStrategy:
                     # 重新获取价格并重试
                     tick = mt5.symbol_info_tick(self.symbol)
                     if tick:
+                        # 重新获取价格并重试 (这里其实应该重新计算 price，但为了简单重试原价)
                         result = mt5.order_send(request)
                         if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
                             Logger.log(self.symbol, "ORDER_SENT", f"开仓价: {price:<10.2f} | 止盈价: {tp:<10.2f} | Magic: {self.magic} (重试)")
@@ -157,13 +189,9 @@ class GridStrategy:
         if time.time() < self.pause_until:
             return
 
-        # 获取一次 tick 和 symbol_info，后续复用
+        # 获取一次 tick，后续复用
         tick = mt5.symbol_info_tick(self.symbol)
         if not tick or tick.bid <= 0: return
-
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info: return
-        digits = symbol_info.digits
 
         # 市场活跃度检查 (Proactive Check)
         if not self._is_market_open(tick):
@@ -184,34 +212,31 @@ class GridStrategy:
             return
 
         # 计算基准网格线 (最近的整数网格)
-        if self.step <= 0:
-            Logger.log(self.symbol, "ERROR", f"Step 异常: {self.step}")
-            return
-
-        base_level = round(curr_price / self.step) * self.step
+        # [优化] 使用封装的网格计算方法
+        base_level = self._get_grid_level(curr_price)
         
         # 1. 获取当前属于本实例的挂单和持仓 (优化：使用集合)
         # 使用注入的数据，如果未传入（如单体测试时）则回退到原逻辑
         if orders_list is not None:
             orders = orders_list
             # 既然是注入的，说明已经按 magic 分组了，无需再次检查 magic
-            existing_prices = {round(o.price_open, digits) for o in orders}
+            existing_prices = {self._normalize_price(o.price_open) for o in orders}
         else:
             orders = mt5.orders_get(symbol=self.symbol)
-            existing_prices = {round(o.price_open, digits) for o in orders if o.magic == self.magic} if orders else set()
+            existing_prices = {self._normalize_price(o.price_open) for o in orders if o.magic == self.magic} if orders else set()
         
         if positions_list is not None:
             positions = positions_list
-            existing_positions = {round(p.price_open, digits) for p in positions}
+            existing_positions = {self._normalize_price(p.price_open) for p in positions}
         else:
             positions = mt5.positions_get(symbol=self.symbol)
-            existing_positions = {round(p.price_open, digits) for p in positions if p.magic == self.magic} if positions else set()
+            existing_positions = {self._normalize_price(p.price_open) for p in positions if p.magic == self.magic} if positions else set()
 
         # 2. 计算目标位 (智能滑动窗口)
         # 扩大搜索范围，确保能找到最近的 window 个网格
         target_levels = []
         for i in range(-self.window - 2, 5):
-            level = round(base_level + (i * self.step), digits)
+            level = self._normalize_price(base_level + (i * self.step))
             # 必须低于现价 (Buy Limit)，且在策略设定的 min_price 之上
             if level < curr_price and level >= self.min_price:
                 target_levels.append(level)
@@ -287,12 +312,9 @@ class GridStrategy:
         # 3. 补单逻辑
         # 只有在有空位时才补单
         if len(my_orders) < self.window:
-            # symbol_info 已在函数开头获取
-
-            # 计算最小安全距离 (防止挂单太近报错，或防止在价格线上反复挂单)
-            stop_level = symbol_info.trade_stops_level * symbol_info.point
+            # [优化] 使用缓存的 stop_level 和 point
             # 最小间距：取 (StopLevel + 2点) 和 (Step * 0.1) 的较大值
-            min_gap = max(stop_level + 2 * symbol_info.point, self.step * 0.1)
+            min_gap = max(self.stop_level + 2 * self.point, self.step * 0.1)
 
             for level in target_levels:
                 # 再次检查空位 (因为循环中可能已经填满)
@@ -322,7 +344,7 @@ class GridStrategy:
                     if new_order:
                         my_orders.append(new_order) # 更新本地计数
                         # 更新 existing_prices 防止重复
-                        existing_prices.add(round(level, digits))
+                        existing_prices.add(self._normalize_price(level))
 
         # 4. 滑动清理逻辑 (优化版) - 这里的逻辑其实已经被上面的 WINDOW_OPT 覆盖大部分
         # 但保留作为兜底，清理那些极其远的订单 (比如手动挂的或者异常残留)
