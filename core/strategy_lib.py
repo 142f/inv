@@ -225,61 +225,107 @@ class GridStrategy:
         if orders and not isinstance(orders, list):
             orders = list(orders)
             
+        my_orders = []
         if orders:
             # 筛选出属于本策略的挂单
             my_orders = [o for o in orders if o.magic == self.magic]
             
-            if len(my_orders) > self.window:
+            # 策略：优先清理超出窗口的订单，或者虽然未超窗但已偏离目标太远的订单
+            # 这样可以腾出空间给新的更优挂单
+            
+            orders_to_remove = []
+            
+            # 1. 数量超限清理
+            if len(my_orders) >= self.window:
                 # 按距离当前价格排序，取消最远的挂单
                 orders_by_distance = sorted(my_orders, key=lambda o: abs(o.price_open - curr_price), reverse=True)
                 
-                # 计算需要取消的数量
-                to_remove_count = len(my_orders) - self.window
+                # 如果数量已经超过，必须删除
+                excess_count = len(my_orders) - self.window
+                if excess_count > 0:
+                    orders_to_remove.extend(orders_by_distance[:excess_count])
                 
-                for i in range(to_remove_count):
-                    o = orders_by_distance[i]
-                    Logger.log(self.symbol, "WINDOW_LIMIT", f"数量超限: {len(my_orders)}/{self.window} | 取消挂单: {o.price_open:<10}")
-                    res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                # 如果数量正好等于窗口，检查最远的一个是否在目标列表中
+                # 如果不在，说明它已经过时了，应该删除以腾出位置给新目标
+                elif len(my_orders) == self.window:
+                    furthest_order = orders_by_distance[0]
+                    # 检查这个最远订单是否在 target_levels 中 (允许微小误差)
+                    is_in_target = False
+                    for t in target_levels:
+                        if abs(furthest_order.price_open - t) < (self.step * 0.1):
+                            is_in_target = True
+                            break
                     
-                    if res.retcode == mt5.TRADE_RETCODE_DONE:
-                        if o in orders:
-                            orders.remove(o)  # 从主列表中移除
-                    else:
-                        Logger.log(self.symbol, "ERROR", f"取消挂单失败: {res.comment} ({res.retcode})")
-                        # 失败时暂停一下
-                        self.pause_until = time.time() + 2
+                    if not is_in_target:
+                        # 只有当确实有新的目标需要添加时才删除
+                        # 检查是否有 target_levels 中的价格未被挂单覆盖
+                        missing_targets = 0
+                        for t in target_levels:
+                            covered = False
+                            for o in my_orders:
+                                if abs(o.price_open - t) < (self.step * 0.1):
+                                    covered = True
+                                    break
+                            if not covered:
+                                missing_targets += 1
+                        
+                        if missing_targets > 0:
+                            orders_to_remove.append(furthest_order)
+
+            # 执行删除
+            for o in orders_to_remove:
+                Logger.log(self.symbol, "WINDOW_OPT", f"优化挂单: {o.price_open:<10} | 腾出空间")
+                res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                if res.retcode == mt5.TRADE_RETCODE_DONE:
+                    if o in orders: orders.remove(o)
+                    if o in my_orders: my_orders.remove(o)
+                else:
+                    Logger.log(self.symbol, "ERROR", f"取消挂单失败: {res.comment} ({res.retcode})")
+                    self.pause_until = time.time() + 2
+                    return # 删除失败则暂停本轮操作
 
         # 3. 补单逻辑
-        # symbol_info 已在函数开头获取
+        # 只有在有空位时才补单
+        if len(my_orders) < self.window:
+            # symbol_info 已在函数开头获取
 
-        # 计算最小安全距离 (防止挂单太近报错，或防止在价格线上反复挂单)
-        stop_level = symbol_info.trade_stops_level * symbol_info.point
-        # 最小间距：取 (StopLevel + 2点) 和 (Step * 0.1) 的较大值
-        min_gap = max(stop_level + 2 * symbol_info.point, self.step * 0.1)
+            # 计算最小安全距离 (防止挂单太近报错，或防止在价格线上反复挂单)
+            stop_level = symbol_info.trade_stops_level * symbol_info.point
+            # 最小间距：取 (StopLevel + 2点) 和 (Step * 0.1) 的较大值
+            min_gap = max(stop_level + 2 * symbol_info.point, self.step * 0.1)
 
-        for level in target_levels:
-            # 检查是否已有挂单
-            if level in existing_prices:
-                continue
-                
-            # 检查是否已有持仓 (防止重复开仓)
-            # 由于滑点存在，持仓价格可能不完全等于 level，需要允许一定误差
-            has_position = False
-            for pos_price in existing_positions:
-                if abs(pos_price - level) < (self.step * 0.5): # 误差范围设为间距的一半
-                    has_position = True
+            for level in target_levels:
+                # 再次检查空位 (因为循环中可能已经填满)
+                if len(my_orders) >= self.window:
                     break
-            
-            if has_position:
-                continue
 
-            # 关键逻辑：只有当 (现价 - 目标价) > 最小间距 时才补单
-            # 这实现了"价格超过网格一定距离后才重新挂"的需求
-            if (curr_price - level) > min_gap:
-                Logger.log(self.symbol, "FILL_GRID", f"目标价: {level:<10.2f} | 当前价: {curr_price:<10.2f}")
-                self._place_buy_order(level)
+                # 检查是否已有挂单
+                if level in existing_prices:
+                    continue
+                    
+                # 检查是否已有持仓 (防止重复开仓)
+                # 由于滑点存在，持仓价格可能不完全等于 level，需要允许一定误差
+                has_position = False
+                for pos_price in existing_positions:
+                    if abs(pos_price - level) < (self.step * 0.5): # 误差范围设为间距的一半
+                        has_position = True
+                        break
+                
+                if has_position:
+                    continue
 
-        # 4. 滑动清理逻辑 (优化版)
+                # 关键逻辑：只有当 (现价 - 目标价) > 最小间距 时才补单
+                # 这实现了"价格超过网格一定距离后才重新挂"的需求
+                if (curr_price - level) > min_gap:
+                    Logger.log(self.symbol, "FILL_GRID", f"目标价: {level:<10.2f} | 当前价: {curr_price:<10.2f}")
+                    new_order = self._place_buy_order(level)
+                    if new_order:
+                        my_orders.append(new_order) # 更新本地计数
+                        # 更新 existing_prices 防止重复
+                        existing_prices.add(round(level, digits))
+
+        # 4. 滑动清理逻辑 (优化版) - 这里的逻辑其实已经被上面的 WINDOW_OPT 覆盖大部分
+        # 但保留作为兜底，清理那些极其远的订单 (比如手动挂的或者异常残留)
         if orders:
             for o in orders:
                 if o.magic == self.magic:
