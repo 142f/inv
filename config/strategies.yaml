@@ -1,0 +1,41 @@
+# 策略配置文件
+# 修改此文件后，系统会自动热加载，无需重启
+
+- symbol: "XAUUSDc"      # 交易品种
+  magic: 1001           # 策略唯一ID (Magic Number)
+  lot: 0.03             # 交易手数
+  step: 3             # 网格间距 (价格单位)
+  tp_dist: 5.0          # 止盈距离 (价格单位)
+  window: 5             # 盘口挂单数量 (单边)
+  min_p: 4000.0         # 最小交易价格
+  max_p: 45000.0         # 最大交易价格
+  enabled: true         # 是否启用
+  use_atr: false        # 是否使用 ATR 动态步长
+  atr_period: 14        # ATR 周期
+  atr_factor: 1.0       # ATR 系数 (Step = ATR * factor)
+
+- symbol: "USDJPYc"
+  magic: 1002
+  lot: 0.06
+  step: 0.25
+  tp_dist: 0.35
+  window: 5
+  min_p: 100
+  max_p: 200
+  enabled: true
+  use_atr: false
+  atr_period: 14
+  atr_factor: 1.0
+
+- symbol: "BTCUSDc"      # 比特币
+  magic: 1003           # 策略唯一ID
+  lot: 0.04             # 交易手数 (同 XAUUSD)
+  step: 180            # 网格间距 (同 XAUUSD)
+  tp_dist: 250        # 止盈距离 (同 XAUUSD)
+  window: 5             # 盘口挂单数量 (同 XAUUSD)
+  min_p: 70000            # 最小交易价格 (已放宽)
+  max_p: 1200000.0       # 最大交易价格 (已放宽)
+  enabled: true         # 是否启用
+  use_atr: false
+  atr_period: 14
+  atr_factor: 1.0

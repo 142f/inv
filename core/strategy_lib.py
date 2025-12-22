@@ -161,6 +161,10 @@ class GridStrategy:
         tick = mt5.symbol_info_tick(self.symbol)
         if not tick or tick.bid <= 0: return
 
+        symbol_info = mt5.symbol_info(self.symbol)
+        if not symbol_info: return
+        digits = symbol_info.digits
+
         # 市场活跃度检查 (Proactive Check)
         if not self._is_market_open(tick):
             return
@@ -180,6 +184,10 @@ class GridStrategy:
             return
 
         # 计算基准网格线 (最近的整数网格)
+        if self.step <= 0:
+            Logger.log(self.symbol, "ERROR", f"Step 异常: {self.step}")
+            return
+
         base_level = round(curr_price / self.step) * self.step
         
         # 1. 获取当前属于本实例的挂单和持仓 (优化：使用集合)
@@ -187,23 +195,23 @@ class GridStrategy:
         if orders_list is not None:
             orders = orders_list
             # 既然是注入的，说明已经按 magic 分组了，无需再次检查 magic
-            existing_prices = {round(o.price_open, 2) for o in orders}
+            existing_prices = {round(o.price_open, digits) for o in orders}
         else:
             orders = mt5.orders_get(symbol=self.symbol)
-            existing_prices = {round(o.price_open, 2) for o in orders if o.magic == self.magic} if orders else set()
+            existing_prices = {round(o.price_open, digits) for o in orders if o.magic == self.magic} if orders else set()
         
         if positions_list is not None:
             positions = positions_list
-            existing_positions = {round(p.price_open, 2) for p in positions}
+            existing_positions = {round(p.price_open, digits) for p in positions}
         else:
             positions = mt5.positions_get(symbol=self.symbol)
-            existing_positions = {round(p.price_open, 2) for p in positions if p.magic == self.magic} if positions else set()
+            existing_positions = {round(p.price_open, digits) for p in positions if p.magic == self.magic} if positions else set()
 
         # 2. 计算目标位 (智能滑动窗口)
         # 扩大搜索范围，确保能找到最近的 window 个网格
         target_levels = []
         for i in range(-self.window - 2, 5):
-            level = round(base_level + (i * self.step), 2)
+            level = round(base_level + (i * self.step), digits)
             # 必须低于现价 (Buy Limit)，且在策略设定的 min_price 之上
             if level < curr_price and level >= self.min_price:
                 target_levels.append(level)
@@ -242,8 +250,7 @@ class GridStrategy:
                         self.pause_until = time.time() + 2
 
         # 3. 补单逻辑
-        symbol_info = mt5.symbol_info(self.symbol)
-        if not symbol_info: return
+        # symbol_info 已在函数开头获取
 
         # 计算最小安全距离 (防止挂单太近报错，或防止在价格线上反复挂单)
         stop_level = symbol_info.trade_stops_level * symbol_info.point

@@ -87,6 +87,12 @@ def sync_strategies():
             else:
                 # 更新已有策略的开关状态和其他参数
                 s = active_strategies[m]
+                # 如果 symbol 发生变化，需要更新并订阅
+                if s.symbol != cfg['symbol']:
+                    s.symbol = cfg['symbol']
+                    mt5.symbol_select(s.symbol, True)
+                    Logger.log("SYSTEM", "UPDATE", f"策略 {m} 品种变更为: {s.symbol}")
+
                 s.enabled = cfg.get('enabled', True)
                 s.step = cfg.get('step', s.step)
                 s.tp_dist = cfg.get('tp_dist', s.tp_dist)

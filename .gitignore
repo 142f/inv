@@ -8,7 +8,7 @@ config/.env
 **/config/.env
 secrets.yaml
 credentials.json
-config/strategies.yaml
+
 
 encrypt_setup.py
 .secret.key
