@@ -50,27 +50,28 @@ class Logger:
         
         # 汉化动作映射 (统一为 4 个汉字以保证对齐)
         action_map = {
-            "FILL_GRID": "补单检查",
-            "ORDER_SENT": "下单成功",
-            "RM_FAR": "清理远单",
-            "WARN": "系统警告",
-            "ERROR": "运行错误",
-            "CRITICAL": "严重错误",
-            "SLEEP": "暂停运行",
-            "CLEANUP": "清理旧单",
-            "SYSTEM": "系统消息",
-            "RELOAD": "重载配置",
-            "ADD": "新增策略",
-            "UPDATE": "更新策略",
-            "REMOVE": "移除策略",
-            "START": "系统启动",
-            "ORDER_FAIL": "下单失败",
-            "EXCEPTION": "未知异常"
+            "FILL_GRID":    "补单检查",
+            "ORDER_SENT":   "下单成功",
+            "RM_FAR":       "清理远单",
+            "WINDOW_LIMIT": "窗口限制",
+            "WARN":         "系统警告",
+            "ERROR":        "运行错误",
+            "CRITICAL":     "严重错误",
+            "SLEEP":        "暂停运行",
+            "CLEANUP":      "清理旧单",
+            "SYSTEM":       "系统消息",
+            "RELOAD":       "重载配置",
+            "ADD":          "新增策略",
+            "UPDATE":       "更新策略",
+            "REMOVE":       "移除策略",
+            "START":        "系统启动",
+            "ORDER_FAIL":   "下单失败",
+            "EXCEPTION":    "未知异常"
         }
         
         action_cn = action_map.get(action, action)
         
         # 优化对齐格式：
-        # Symbol: 9字符 (BTCUSDc)
-        # Action: 4个汉字 (不再使用 <8 填充，因为汉字宽度在不同终端不一致，定长最安全)
-        log_func(f"{symbol:<9} | {action_cn} | {message}")
+        # Symbol: 10字符 (BTCUSDc   )
+        # Action: 【xxxx】 增加区分度
+        log_func(f"{symbol:<10} | 【{action_cn}】 | {message}")

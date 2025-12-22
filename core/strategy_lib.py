@@ -100,13 +100,13 @@ class GridStrategy:
                     if tick:
                         result = mt5.order_send(request)
                         if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                            Logger.log(self.symbol, "ORDER_SENT", f"价格: {price:<8} | 止盈: {tp:<8} | Magic: {self.magic} (重试)")
+                            Logger.log(self.symbol, "ORDER_SENT", f"开仓价: {price:<10.2f} | 止盈价: {tp:<10.2f} | Magic: {self.magic} (重试)")
                             return result.order
 
                 self._handle_order_error(result.retcode, result.comment, price)
                 return None
                 
-            Logger.log(self.symbol, "ORDER_SENT", f"价格: {price:<8} | 止盈: {tp:<8} | Magic: {self.magic}")
+            Logger.log(self.symbol, "ORDER_SENT", f"开仓价: {price:<10.2f} | 止盈价: {tp:<10.2f} | Magic: {self.magic}")
             return result.order
             
         except Exception as e:
@@ -131,7 +131,7 @@ class GridStrategy:
             Logger.log(self.symbol, "ERROR", "无效手数")
             self.enabled = False
         else:
-            Logger.log(self.symbol, "ORDER_FAIL", f"RC: {retcode} ({comment}) | 价格: {price}")
+            Logger.log(self.symbol, "ORDER_FAIL", f"RC: {retcode:<5} | 价格: {price:<10} | {comment}")
             # 通用错误暂停 5 秒，防止刷屏
             self.pause_until = time.time() + 5
 
@@ -212,6 +212,35 @@ class GridStrategy:
         target_levels.sort(reverse=True)
         target_levels = target_levels[:self.window]
 
+        # 新增：挂单数量限制检查 - 当挂单超过窗口限制时，取消最远的挂单
+        # 确保 orders 是列表以便修改
+        if orders and not isinstance(orders, list):
+            orders = list(orders)
+            
+        if orders:
+            # 筛选出属于本策略的挂单
+            my_orders = [o for o in orders if o.magic == self.magic]
+            
+            if len(my_orders) > self.window:
+                # 按距离当前价格排序，取消最远的挂单
+                orders_by_distance = sorted(my_orders, key=lambda o: abs(o.price_open - curr_price), reverse=True)
+                
+                # 计算需要取消的数量
+                to_remove_count = len(my_orders) - self.window
+                
+                for i in range(to_remove_count):
+                    o = orders_by_distance[i]
+                    Logger.log(self.symbol, "WINDOW_LIMIT", f"数量超限: {len(my_orders)}/{self.window} | 取消挂单: {o.price_open:<10}")
+                    res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                    
+                    if res.retcode == mt5.TRADE_RETCODE_DONE:
+                        if o in orders:
+                            orders.remove(o)  # 从主列表中移除
+                    else:
+                        Logger.log(self.symbol, "ERROR", f"取消挂单失败: {res.comment} ({res.retcode})")
+                        # 失败时暂停一下
+                        self.pause_until = time.time() + 2
+
         # 3. 补单逻辑
         symbol_info = mt5.symbol_info(self.symbol)
         if not symbol_info: return
@@ -240,7 +269,7 @@ class GridStrategy:
             # 关键逻辑：只有当 (现价 - 目标价) > 最小间距 时才补单
             # 这实现了"价格超过网格一定距离后才重新挂"的需求
             if (curr_price - level) > min_gap:
-                Logger.log(self.symbol, "FILL_GRID", f"目标价: {level:<10} | 当前价: {curr_price}")
+                Logger.log(self.symbol, "FILL_GRID", f"目标价: {level:<10.2f} | 当前价: {curr_price:<10.2f}")
                 self._place_buy_order(level)
 
         # 4. 滑动清理逻辑 (优化版)
@@ -253,7 +282,7 @@ class GridStrategy:
                     safe_zone = (self.window + 3) * self.step
                     
                     if dist > safe_zone:
-                        Logger.log(self.symbol, "RM_FAR", f"挂单价: {o.price_open:<10} | 距离值: {dist:.2f}")
+                        Logger.log(self.symbol, "RM_FAR", f"挂单价: {o.price_open:<10.2f} | 距离值: {dist:<10.2f}")
                         res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                         if res.retcode != mt5.TRADE_RETCODE_DONE:
                             Logger.log(self.symbol, "ERROR", f"删除失败: {res.comment} ({res.retcode})")
