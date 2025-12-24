@@ -3,6 +3,7 @@ import MetaTrader5 as mt5
 import time
 import os
 import yaml
+import argparse
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
@@ -168,58 +169,98 @@ def initialize_system():
             
     return True
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Grid trading runner (bounded loop; no infinite loops)")
+    parser.add_argument(
+        "--cycles",
+        type=int,
+        default=int(os.getenv("INV_CYCLES", "1")),
+        help="How many cycles to run (default: 1).",
+    )
+    parser.add_argument(
+        "--max-seconds",
+        type=float,
+        default=float(os.getenv("INV_MAX_SECONDS", "0")),
+        help="Optional max runtime in seconds; stops when exceeded (0 disables).",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=float(os.getenv("INV_INTERVAL", "1.0")),
+        help="Sleep interval between cycles in seconds (default: 1.0).",
+    )
+    return parser.parse_args()
+
+
+def run_loop(*, cycles: int, max_seconds: float, interval: float):
+    # Guardrails: never run an unbounded busy loop.
+    cycles = max(1, int(cycles))
+    interval = max(0.5, float(interval))
+    max_seconds = float(max_seconds)
+
+    # First load
+    sync_strategies()
+
+    executor = ThreadPoolExecutor(max_workers=4)
+    started_at = time.monotonic()
+    halted = False
+
+    try:
+        for _ in range(cycles):
+            if max_seconds > 0 and (time.monotonic() - started_at) >= max_seconds:
+                break
+
+            # Global circuit breaker
+            acc = mt5.account_info()
+            if acc and acc.margin_level > 0 and acc.margin_level < 200:
+                if not halted:
+                    Logger.log("SYSTEM", "HALT", f"保证金过低 ({acc.margin_level}%)，暂停运行")
+                    halted = True
+                time.sleep(max(2.0, interval))
+                continue
+            halted = False
+
+            # Hot reload strategies if config changed
+            sync_strategies()
+
+            # Batch fetch orders/positions once
+            all_orders = mt5.orders_get()
+            all_positions = mt5.positions_get()
+
+            orders_by_magic = defaultdict(list)
+            if all_orders:
+                for o in all_orders:
+                    orders_by_magic[o.magic].append(o)
+
+            positions_by_magic = defaultdict(list)
+            if all_positions:
+                for p in all_positions:
+                    positions_by_magic[p.magic].append(p)
+
+            futures = []
+            for magic, s in active_strategies.items():
+                f = executor.submit(
+                    s.update,
+                    orders_list=orders_by_magic[magic],
+                    positions_list=positions_by_magic[magic],
+                )
+                futures.append(f)
+
+            for f in futures:
+                f.result()
+
+            time.sleep(interval)
+    finally:
+        executor.shutdown(wait=True)
+
 if __name__ == "__main__":
+    args = parse_args()
     if initialize_system():
-        Logger.log("SYSTEM", "START", "热加载网格系统已就绪")
-        # 首次加载
-        sync_strategies()
-        
-        # 创建全局线程池
-        executor = ThreadPoolExecutor(max_workers=4)
-
+        Logger.log("SYSTEM", "START", f"系统已就绪 (cycles={args.cycles}, max_seconds={args.max_seconds}, interval={args.interval})")
         try:
-            while True:
-                # 全局熔断检查 (Circuit Breaker)
-                acc = mt5.account_info()
-                if acc and acc.margin_level < 200 and acc.margin_level > 0:
-                     Logger.log("SYSTEM", "HALT", f"保证金过低 ({acc.margin_level}%)，暂停运行")
-                     time.sleep(5)
-                     continue
-
-                # 每次循环开始前检查配置是否更新
-                sync_strategies()
-                
-                # --- 新增：批处理 I/O ---
-                # 一次性拿回所有挂单和持仓
-                all_orders = mt5.orders_get()
-                all_positions = mt5.positions_get()
-
-                # 根据 magic 分组，避免在策略内部循环查找，复杂度由 O(N^2) 降为 O(N)
-                orders_by_magic = defaultdict(list)
-                if all_orders:
-                    for o in all_orders:
-                        orders_by_magic[o.magic].append(o)
-
-                positions_by_magic = defaultdict(list)
-                if all_positions:
-                    for p in all_positions:
-                        positions_by_magic[p.magic].append(p)
-
-                # 执行所有活跃策略的巡检 (并发版)
-                futures = []
-                for magic, s in active_strategies.items():
-                    # 并发执行逻辑
-                    f = executor.submit(
-                        s.update, 
-                        orders_list=orders_by_magic[magic], 
-                        positions_list=positions_by_magic[magic]
-                    )
-                    futures.append(f)
-
-                # 等待本轮所有策略处理完毕，确保下一轮循环开始前数据是同步的
-                for f in futures: f.result()
-                
-                time.sleep(0.2) # 提高频率到 200ms
+            run_loop(cycles=args.cycles, max_seconds=args.max_seconds, interval=args.interval)
         except KeyboardInterrupt:
             Logger.log("SYSTEM", "STOP", "手动停止")
-    mt5.shutdown()
+        finally:
+            mt5.shutdown()

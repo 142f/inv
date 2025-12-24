@@ -143,6 +143,8 @@ class GridStrategy:
             
         except Exception as e:
             Logger.log(self.symbol, "EXCEPTION", f"下单异常: {str(e)}")
+            # 异常时也进行退避，避免主循环频繁调用导致刷日志/高频重试
+            self.pause_until = max(self.pause_until, time.time() + 2)
             return None
 
     def _handle_order_error(self, retcode, comment, price):
