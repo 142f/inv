@@ -26,8 +26,29 @@ class GridStrategy:
         self.atr_period = atr_period
         self.atr_factor = atr_factor
         
+        # 内部状态变量
+        self._last_atr_value = None
+        self._last_tick_time = 0
+        
         # [优化] 缓存静态 Symbol 信息
         self._cache_symbol_info()
+
+    def get_state(self):
+        """获取策略内部状态，用于配置同步时保持状态"""
+        return {
+            'pause_until': self.pause_until,
+            'enabled': self.enabled,
+            '_last_atr_value': self._last_atr_value,
+            '_last_tick_time': self._last_tick_time
+        }
+
+    def set_state(self, state):
+        """恢复策略内部状态"""
+        if state:
+            self.pause_until = state.get('pause_until', self.pause_until)
+            self.enabled = state.get('enabled', self.enabled)
+            self._last_atr_value = state.get('_last_atr_value', self._last_atr_value)
+            self._last_tick_time = state.get('_last_tick_time', self._last_tick_time)
 
     def _cache_symbol_info(self):
         info = mt5.symbol_info(self.symbol)

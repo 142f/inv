@@ -88,13 +88,18 @@ def sync_strategies():
             else:
                 # 更新已有策略的开关状态和其他参数
                 s = active_strategies[m]
+                
+                # 保存当前内部状态，避免状态丢失
+                current_state = s.get_state()
+                
                 # 如果 symbol 发生变化，需要更新并订阅
                 if s.symbol != cfg['symbol']:
                     s.symbol = cfg['symbol']
                     mt5.symbol_select(s.symbol, True)
                     Logger.log("SYSTEM", "UPDATE", f"策略 {m} 品种变更为: {s.symbol}")
 
-                s.enabled = cfg.get('enabled', True)
+                # 更新配置参数
+                s.enabled = cfg.get('enabled', s.enabled)
                 s.step = cfg.get('step', s.step)
                 s.tp_dist = cfg.get('tp_dist', s.tp_dist)
                 s.lot = cfg.get('lot', s.lot)
@@ -105,12 +110,18 @@ def sync_strategies():
                 s.atr_period = cfg.get('atr_period', s.atr_period)
                 s.atr_factor = cfg.get('atr_factor', s.atr_factor)
                 
+                # 恢复内部状态
+                s.set_state(current_state)
+                
                 Logger.log("SYSTEM", "UPDATE", f"已同步策略状态: {cfg['symbol']} (Enabled: {s.enabled})")
         
         # 2. 移除已删除的策略
         for m in list(active_strategies.keys()):
             if m not in new_magics:
                 Logger.log("SYSTEM", "REMOVE", f"移除策略 Magic: {m}")
+                # 先清理该策略的挂单再移除
+                strategy = active_strategies[m]
+                strategy.clear_old_orders()
                 del active_strategies[m]
         
         last_config_mtime = current_mtime
@@ -205,6 +216,7 @@ def run_loop(*, cycles: int, max_seconds: float, interval: float):
     executor = ThreadPoolExecutor(max_workers=4)
     started_at = time.monotonic()
     halted = False
+    last_sync_time = time.monotonic()
 
     try:
         for _ in range(cycles):
@@ -221,8 +233,11 @@ def run_loop(*, cycles: int, max_seconds: float, interval: float):
                 continue
             halted = False
 
-            # Hot reload strategies if config changed
-            sync_strategies()
+            # 优化：减少配置检查频率，避免频繁重载
+            current_time = time.monotonic()
+            if current_time - last_sync_time >= 2.0:  # 每2秒检查一次配置变更
+                sync_strategies()
+                last_sync_time = current_time
 
             # Batch fetch orders/positions once
             all_orders = mt5.orders_get()
@@ -240,6 +255,10 @@ def run_loop(*, cycles: int, max_seconds: float, interval: float):
 
             futures = []
             for magic, s in active_strategies.items():
+                # 检查策略是否启用
+                if not s.enabled:
+                    continue
+                    
                 f = executor.submit(
                     s.update,
                     orders_list=orders_by_magic[magic],
@@ -262,5 +281,12 @@ if __name__ == "__main__":
             run_loop(cycles=args.cycles, max_seconds=args.max_seconds, interval=args.interval)
         except KeyboardInterrupt:
             Logger.log("SYSTEM", "STOP", "手动停止")
+        except Exception as e:
+            Logger.log("SYSTEM", "ERROR", f"运行异常: {e}")
         finally:
-            mt5.shutdown()
+            # 仅在程序正常退出时关闭MT5连接
+            if mt5.terminal_info() is not None:
+                mt5.shutdown()
+                Logger.log("SYSTEM", "SHUTDOWN", "MT5连接已关闭")
+    else:
+        Logger.log("SYSTEM", "ERROR", "系统初始化失败")
