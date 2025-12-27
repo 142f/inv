@@ -4,14 +4,17 @@ import time
 import os
 import yaml
 import argparse
+import threading
 from dotenv import load_dotenv
-from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from core.strategy_lib import GridStrategy
 from core.logger import Logger
 from core.security import Security
 
 load_dotenv()
+
+# 全局锁，确保 MT5 调用串行化
+MT5_LOCK = threading.Lock()
 
 # 使用绝对路径确保在任何目录下运行都能找到配置文件
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -57,15 +60,32 @@ def validate_strategy_config(cfg):
 def sync_strategies():
     """同步策略实例：热加载核心"""
     global last_config_mtime
+    
+    # 调试：打印配置文件路径
+    # print(f"DEBUG: Checking config file at: {CONFIG_FILE}")
+    
     try:
+        if not os.path.exists(CONFIG_FILE):
+            Logger.log("SYSTEM", "WARN", f"配置文件不存在: {CONFIG_FILE}")
+            return
+
         current_mtime = os.path.getmtime(CONFIG_FILE)
     except FileNotFoundError:
+        Logger.log("SYSTEM", "WARN", f"无法访问配置文件: {CONFIG_FILE}")
+        return
+    except Exception as e:
+        Logger.log("SYSTEM", "ERROR", f"检查配置文件异常: {e}")
         return
 
     if current_mtime > last_config_mtime:
-        Logger.log("SYSTEM", "RELOAD", "检测到配置变更，正在同步策略...")
+        Logger.log("SYSTEM", "RELOAD", f"检测到配置变更 (mtime={current_mtime}), 正在同步策略...")
         new_configs = load_configs()
-        if new_configs is None: return # 如果读取失败，不进行更新
+        if new_configs is None: 
+            Logger.log("SYSTEM", "WARN", "配置加载结果为空")
+            return # 如果读取失败，不进行更新
+            
+        if not new_configs:
+             Logger.log("SYSTEM", "WARN", "配置文件为空或没有策略条目")
 
         new_magics = [cfg['magic'] for cfg in new_configs]
         
@@ -80,9 +100,11 @@ def sync_strategies():
             m = cfg['magic']
             if m not in active_strategies:
                 Logger.log("SYSTEM", "ADD", f"增加新策略: {cfg['symbol']} (Magic: {m})")
-                strategy = GridStrategy(**cfg)
+                # 注入全局锁
+                strategy = GridStrategy(**cfg, lock=MT5_LOCK)
                 active_strategies[m] = strategy
-                mt5.symbol_select(cfg['symbol'], True)
+                with MT5_LOCK:
+                    mt5.symbol_select(cfg['symbol'], True)
                 # 启动时清理旧挂单
                 strategy.clear_old_orders()
             else:
@@ -95,7 +117,8 @@ def sync_strategies():
                 # 如果 symbol 发生变化，需要更新并订阅
                 if s.symbol != cfg['symbol']:
                     s.symbol = cfg['symbol']
-                    mt5.symbol_select(s.symbol, True)
+                    with MT5_LOCK:
+                        mt5.symbol_select(s.symbol, True)
                     Logger.log("SYSTEM", "UPDATE", f"策略 {m} 品种变更为: {s.symbol}")
 
                 # 更新配置参数
@@ -109,6 +132,10 @@ def sync_strategies():
                 s.use_atr = cfg.get('use_atr', s.use_atr)
                 s.atr_period = cfg.get('atr_period', s.atr_period)
                 s.atr_factor = cfg.get('atr_factor', s.atr_factor)
+                
+                # 新增参数更新
+                s.mode = cfg.get('mode', s.mode)
+                s.out_of_range_action = cfg.get('out_of_range_action', s.out_of_range_action)
                 
                 # 恢复内部状态
                 s.set_state(current_state)
@@ -150,33 +177,30 @@ def initialize_system():
 
     # 初始化参数
     init_params = {}
-    if mt5_path:
-        init_params["path"] = mt5_path.strip().strip('"').strip("'").strip()
-
-    # 尝试初始化
-    if not mt5.initialize(**init_params) and not mt5.initialize():
-        Logger.log("SYSTEM", "ERROR", f"MT5 Init Failed: {mt5.last_error()}")
-        return False
-
-    # --- 智能登录逻辑 ---
-    # 1. 检查当前终端是否已经登录了正确的账号
-    current_account_info = mt5.account_info()
-    if acc_id != 0 and current_account_info and current_account_info.login == acc_id:
-        Logger.log("SYSTEM", "INFO", f"检测到终端已登录账号 {acc_id}，跳过重复登录")
-        return True
-
-    # 2. 如果未登录或账号不一致，则尝试登录
-    if acc_id != 0:
-        Logger.log("SYSTEM", "INFO", f"正在尝试登录账号 {acc_id}...")
-        if not mt5.login(acc_id, password=pwd, server=srv):
-            Logger.log("SYSTEM", "ERROR", f"Login Failed: {mt5.last_error()} (请检查 .env 中的账号/密码/服务器)")
+    with MT5_LOCK:
+        if not mt5.initialize(**init_params) and not mt5.initialize():
+            Logger.log("SYSTEM", "ERROR", f"MT5 Init Failed: {mt5.last_error()}")
             return False
-    else:
-        if current_account_info:
-            Logger.log("SYSTEM", "WARN", f"未配置指定账号，使用当前终端账号: {current_account_info.login}")
+
+        # --- 智能登录逻辑 ---
+        # 1. 检查当前终端是否已经登录了正确的账号
+        current_account_info = mt5.account_info()
+        if acc_id != 0 and current_account_info and current_account_info.login == acc_id:
+            Logger.log("SYSTEM", "INFO", f"检测到终端已登录账号 {acc_id}，跳过重复登录")
+            return True
+
+        # 2. 如果未登录或账号不一致，则尝试登录
+        if acc_id != 0:
+            Logger.log("SYSTEM", "INFO", f"正在尝试登录账号 {acc_id}...")
+            if not mt5.login(acc_id, password=pwd, server=srv):
+                Logger.log("SYSTEM", "ERROR", f"Login Failed: {mt5.last_error()} (请检查 .env 中的账号/密码/服务器)")
+                return False
         else:
-            Logger.log("SYSTEM", "ERROR", "未配置账号且当前终端未登录")
-            return False
+            if current_account_info:
+                Logger.log("SYSTEM", "WARN", f"未配置指定账号，使用当前终端账号: {current_account_info.login}")
+            else:
+                Logger.log("SYSTEM", "ERROR", "未配置账号且当前终端未登录")
+                return False
             
     return True
 
@@ -186,8 +210,8 @@ def parse_args():
     parser.add_argument(
         "--cycles",
         type=int,
-        default=int(os.getenv("INV_CYCLES", "1")),
-        help="How many cycles to run (default: 1).",
+        default=int(os.getenv("INV_CYCLES", "10000")), # 默认增加循环次数，方便测试
+        help="How many cycles to run (default: 10000).",
     )
     parser.add_argument(
         "--max-seconds",
@@ -208,15 +232,10 @@ def run_loop(*, cycles: int, max_seconds: float, interval: float):
     # Guardrails: never run an unbounded busy loop.
     cycles = max(1, int(cycles))
     interval = max(0.5, float(interval))
-    max_seconds = float(max_seconds)
-
-    # First load
-    sync_strategies()
-
-    executor = ThreadPoolExecutor(max_workers=4)
     started_at = time.monotonic()
     halted = False
     last_sync_time = time.monotonic()
+    last_account_log_time = 0
 
     try:
         for _ in range(cycles):
@@ -224,13 +243,23 @@ def run_loop(*, cycles: int, max_seconds: float, interval: float):
                 break
 
             # Global circuit breaker
-            acc = mt5.account_info()
-            if acc and acc.margin_level > 0 and acc.margin_level < 200:
-                if not halted:
-                    Logger.log("SYSTEM", "HALT", f"保证金过低 ({acc.margin_level}%)，暂停运行")
-                    halted = True
-                time.sleep(max(2.0, interval))
-                continue
+            with MT5_LOCK:
+                acc = mt5.account_info()
+            
+            if acc:
+                # 资金播报 (每5分钟)
+                if time.monotonic() - last_account_log_time > 300:
+                    Logger.log("SYSTEM", "ACCOUNT", 
+                        f"余额: {acc.balance:.2f} | 净值: {acc.equity:.2f} | "
+                        f"预付款: {acc.margin:.2f} | 比例: {acc.margin_level:.2f}%")
+                    last_account_log_time = time.monotonic()
+
+                if acc.margin_level > 0 and acc.margin_level < 200:
+                    if not halted:
+                        Logger.log("SYSTEM", "HALT", f"保证金过低 ({acc.margin_level}%)，暂停运行")
+                        halted = True
+                    time.sleep(max(2.0, interval))
+                    continue
             halted = False
 
             # 优化：减少配置检查频率，避免频繁重载
@@ -240,8 +269,9 @@ def run_loop(*, cycles: int, max_seconds: float, interval: float):
                 last_sync_time = current_time
 
             # Batch fetch orders/positions once
-            all_orders = mt5.orders_get()
-            all_positions = mt5.positions_get()
+            with MT5_LOCK:
+                all_orders = mt5.orders_get()
+                all_positions = mt5.positions_get()
 
             orders_by_magic = defaultdict(list)
             if all_orders:
@@ -253,25 +283,23 @@ def run_loop(*, cycles: int, max_seconds: float, interval: float):
                 for p in all_positions:
                     positions_by_magic[p.magic].append(p)
 
-            futures = []
+            # 串行执行策略
             for magic, s in active_strategies.items():
                 # 检查策略是否启用
                 if not s.enabled:
                     continue
-                    
-                f = executor.submit(
-                    s.update,
-                    orders_list=orders_by_magic[magic],
-                    positions_list=positions_by_magic[magic],
-                )
-                futures.append(f)
-
-            for f in futures:
-                f.result()
+                
+                try:
+                    s.update(
+                        orders_list=orders_by_magic[magic],
+                        positions_list=positions_by_magic[magic],
+                    )
+                except Exception as e:
+                    Logger.log(s.symbol, "ERROR", f"策略执行异常: {e}")
 
             time.sleep(interval)
     finally:
-        executor.shutdown(wait=True)
+        pass
 
 if __name__ == "__main__":
     args = parse_args()
@@ -284,9 +312,10 @@ if __name__ == "__main__":
         except Exception as e:
             Logger.log("SYSTEM", "ERROR", f"运行异常: {e}")
         finally:
-            # 仅在程序正常退出时关闭MT5连接
-            if mt5.terminal_info() is not None:
-                mt5.shutdown()
+            with MT5_LOCK:
+                if mt5.terminal_info() is not None:
+                    mt5.shutdown()
+                    mt5.shutdown()
                 Logger.log("SYSTEM", "SHUTDOWN", "MT5连接已关闭")
     else:
         Logger.log("SYSTEM", "ERROR", "系统初始化失败")
