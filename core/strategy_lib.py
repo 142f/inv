@@ -1,6 +1,7 @@
 # strategy_lib.py
 import MetaTrader5 as mt5
 import time
+import math
 import numpy as np
 from .logger import Logger
 
@@ -103,8 +104,11 @@ class GridStrategy:
         self.extreme_cooldown = float(extreme_cooldown)
         self.max_new_orders_per_update = int(max_new_orders_per_update)
         
-        # --- Hedge params ---
-        self.hedge_enabled = bool(hedge_enabled)
+        # --- Hedge params ---        # hedge_enabled 可能来自配置文件/环境变量（字符串），需要安全解析
+        if isinstance(hedge_enabled, str):
+            self.hedge_enabled = hedge_enabled.strip().lower() in ("1", "true", "yes", "y", "on")
+        else:
+            self.hedge_enabled = bool(hedge_enabled)
         self.hedge_fraction = float(hedge_fraction)
         self.hedge_tranches = int(hedge_tranches)
         self.hedge_entry_steps = int(hedge_entry_steps)
@@ -141,6 +145,14 @@ class GridStrategy:
         # [优化] 缓存静态 Symbol 信息
         self._cache_symbol_info()
 
+        # 对齐 step 到品种的最小跳动（point），减少浮点/舍入导致的重复层级与抖动
+        self.step = self._normalize_step(self.step)
+        self.base_step = self.step
+
+        # anchor 若由外部传入，统一规范到 digits
+        if self.anchor is not None:
+            self.anchor = self._normalize_price(self.anchor)
+
     def get_state(self):
         """获取策略内部状态，用于配置同步时保持状态"""
         return {
@@ -157,16 +169,45 @@ class GridStrategy:
 
     def set_state(self, state):
         """恢复策略内部状态"""
-        if state:
-            self.pause_until = state.get('pause_until', self.pause_until)
-            self.enabled = state.get('enabled', self.enabled)
-            self._last_atr_value = state.get('_last_atr_value', self._last_atr_value)
-            self._last_tick_time = state.get('_last_tick_time', self._last_tick_time)
-            self._last_atr_time = state.get('_last_atr_time', self._last_atr_time)
-            self.anchor = state.get('anchor', self.anchor)
-            self._last_recenter_time = state.get('_last_recenter_time', self._last_recenter_time)
-            self._last_hedge_time = float(state.get("_last_hedge_time", self._last_hedge_time) or 0.0)
-            self._last_hedge_entry_price = state.get("_last_hedge_entry_price", self._last_hedge_entry_price)
+        if not state:
+            return
+
+        def _to_float(v, default):
+            try:
+                if v is None:
+                    return default
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+
+        def _to_bool(v, default):
+            if v is None:
+                return default
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, str):
+                s = v.strip().lower()
+                if s in ("1", "true", "yes", "y", "on"):
+                    return True
+                if s in ("0", "false", "no", "n", "off"):
+                    return False
+            return bool(v)
+
+        self.pause_until = _to_float(state.get('pause_until', self.pause_until), self.pause_until)
+        self.enabled = _to_bool(state.get('enabled', self.enabled), self.enabled)
+        self._last_atr_value = _to_float(state.get('_last_atr_value', self._last_atr_value), self._last_atr_value)
+        self._last_tick_time = _to_float(state.get('_last_tick_time', self._last_tick_time), self._last_tick_time)
+        self._last_atr_time = _to_float(state.get('_last_atr_time', self._last_atr_time), self._last_atr_time)
+
+        anchor_val = state.get('anchor', self.anchor)
+        self.anchor = None if anchor_val is None else _to_float(anchor_val, self.anchor if self.anchor is not None else 0.0)
+
+        self._last_recenter_time = _to_float(state.get('_last_recenter_time', self._last_recenter_time), self._last_recenter_time)
+        self._last_hedge_time = _to_float(state.get('_last_hedge_time', self._last_hedge_time), self._last_hedge_time) or 0.0
+
+        entry_val = state.get('_last_hedge_entry_price', self._last_hedge_entry_price)
+        self._last_hedge_entry_price = None if entry_val is None else _to_float(entry_val, self._last_hedge_entry_price if self._last_hedge_entry_price is not None else 0.0)
+
 
     def _cache_symbol_info(self):
         if self.lock:
@@ -196,12 +237,45 @@ class GridStrategy:
     def _normalize_price(self, price):
         return float(round(price, self.digits))
 
+    def _normalize_step(self, step):
+        """把 step 对齐到 symbol 的 point，避免浮点导致网格层级重复/抖动"""
+        try:
+            step = float(step)
+        except (TypeError, ValueError):
+            return 0.0
+        if step <= 0:
+            return step
+        if getattr(self, "point", None) and self.point > 0:
+            ticks = max(1, int(round(step / self.point)))
+            return float(ticks * self.point)
+        return step
+
     def _normalize_volume(self, vol):
-        # 简单的步长取整
-        if self.vol_step > 0:
-            steps = round(vol / self.vol_step)
-            vol = steps * self.vol_step
-        return float(round(max(self.vol_min, min(self.vol_max, vol)), 2))
+        """按 volume_step 取整并限制在 [volume_min, volume_max]"""
+        if vol is None:
+            return None
+
+        try:
+            vol = float(vol)
+        except (TypeError, ValueError):
+            return None
+
+        if self.volume_min is not None:
+            vol = max(vol, float(self.volume_min))
+        if self.volume_max is not None:
+            vol = min(vol, float(self.volume_max))
+
+        step = float(self.volume_step) if self.volume_step else 0.0
+        if step > 0:
+            steps = math.floor((vol + 1e-12) / step)
+            vol = steps * step
+
+            s = f"{step:.12f}".rstrip("0").rstrip(".")
+            decimals = 0 if "." not in s else len(s.split(".")[1])
+        else:
+            decimals = 2
+
+        return float(round(vol, decimals))
 
     def _get_grid_level(self, price, anchor):
         """以 anchor 为锚点，把 price snap 到最近的网格线"""
@@ -212,6 +286,10 @@ class GridStrategy:
     def _init_anchor_if_needed(self, mid_price):
         if self.anchor is None:
             # 用当前价格作为初始anchor，并snap到网格线上
+            if self.step <= 0:
+                self.anchor = self._normalize_price(mid_price)
+                Logger.log(self.symbol, "WARN", f"step<=0，无法初始化网格，对齐 anchor={self.anchor}")
+                return
             base0 = round(mid_price / self.step) * self.step
             self.anchor = self._normalize_price(base0)
             Logger.log(self.symbol, "INIT", f"初始化 Anchor: {self.anchor}")
@@ -220,6 +298,9 @@ class GridStrategy:
         """触发条件：偏离>=recenter_steps*step 且超过冷却时间"""
         now = time.time()
         if now - self._last_recenter_time < self.recenter_cooldown:
+            return False
+
+        if self.step <= 0 or self.anchor is None:
             return False
 
         drift_steps = (mid_price - self.anchor) / self.step
@@ -478,7 +559,7 @@ class GridStrategy:
                 orders = mt5.orders_get(symbol=self.symbol)
         else:
             orders = mt5.orders_get(symbol=self.symbol)
-            
+
         if orders:
             for o in orders:
                 if o.magic == self.magic:
@@ -487,7 +568,11 @@ class GridStrategy:
                             res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                     else:
                         res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
-                        
+
+                    if res is None:
+                        Logger.log(self.symbol, "WARN", f"撤单返回 None: ticket={o.ticket}, err={mt5.last_error()}")
+                        continue
+
                     if res.retcode == 10018: # MARKET_CLOSED
                         Logger.log(self.symbol, "WARN", "市场休市，无法撤单，暂停运行 5 分钟")
                         self.pause_until = time.time() + 300
@@ -511,13 +596,57 @@ class GridStrategy:
     def _allow_side(self, side, long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol):
         """
         side: "buy" or "sell"
-        mode handling:
+
+        额外风控：
+          - max_gross_vol: 限制总暴露（持仓+挂单）
+          - max_long_vol / max_short_vol: 限制单边暴露（持仓+挂单）
+
+        mode handling (max_net_vol):
           - neutral: abs(net) <= max_net_vol
-          - long:    cap long exposure by max_net_vol
-          - short:   cap short exposure by max_net_vol
+          - long:    cap long exposure by max_net_vol (允许 sell 用于止盈/再平衡)
+          - short:   cap short exposure by max_net_vol (允许 buy 用于止盈/再平衡)
         """
+        lot = float(self.lot)
+
+        gross = float(long_vol + short_vol + pending_buy_vol + pending_sell_vol)
+        if self.max_gross_vol is not None:
+            if gross + lot > float(self.max_gross_vol):
+                return False
+
+        if side == "buy" and self.max_long_vol is not None:
+            if (float(long_vol) + float(pending_buy_vol) + lot) > float(self.max_long_vol):
+                return False
+
+        if side == "sell" and self.max_short_vol is not None:
+            if (float(short_vol) + float(pending_sell_vol) + lot) > float(self.max_short_vol):
+                return False
+
         if self.max_net_vol is None:
             return True
+
+        cap = float(self.max_net_vol)
+
+        if self.mode == "neutral":
+            if side == "buy":
+                return abs(net_vol + lot) <= cap
+            else:
+                return abs(net_vol - lot) <= cap
+
+        if self.mode == "long":
+            total_long = float(long_vol + pending_buy_vol)
+            if side == "buy":
+                return (total_long + lot) <= cap
+            else:
+                return True
+
+        if self.mode == "short":
+            total_short = float(short_vol + pending_sell_vol)
+            if side == "sell":
+                return (total_short + lot) <= cap
+            else:
+                return True
+
+        return True
 
         cap = float(self.max_net_vol)
 
@@ -596,16 +725,23 @@ class GridStrategy:
         return (thr is not None and cur >= thr), cur, thr
 
     def _volume_gate(self, rates):
-        base = self.hedge_vol_base
-        win = self.hedge_vol_window
-        mult = self.hedge_vol_mult
+        base = int(self.hedge_vol_base) if self.hedge_vol_base is not None else 0
+        win = int(self.hedge_vol_window) if self.hedge_vol_window is not None else 0
+        mult = float(self.hedge_vol_mult) if self.hedge_vol_mult is not None else 0.0
+
+        if base <= 0 or win <= 0:
+            return False, None, None
+
         v = [float(x["tick_volume"]) for x in rates]
         if len(v) < base + win + 10:
             return False, None, None
+
         cur = sum(v[-win:]) / win
         basev = sum(v[-(base + win):-win]) / base
+
         if basev <= 0:
             return False, cur, basev
+
         return cur >= mult * basev, cur, basev
 
     def _open_hedge_sell(self, vol):
@@ -725,8 +861,13 @@ class GridStrategy:
         else:
             tick = mt5.symbol_info_tick(self.symbol)
             
-        if not tick or tick.bid <= 0: 
+        if (not tick) or tick.bid <= 0 or tick.ask <= 0:
             self.pause_until = now + 5
+            return
+
+        if self.step <= 0:
+            Logger.log(self.symbol, "CRITICAL", f"step<=0 ({self.step})，网格参数非法，已停止策略")
+            self.enabled = False
             return
 
         # 市场活跃度检查 (Proactive Check)
@@ -734,10 +875,16 @@ class GridStrategy:
             return
 
         # 极端点差闸门 (Fuse)
-        if self.max_spread_points is not None:
+        if self.max_spread_points is not None and self.point > 0:
             spread = tick.ask - tick.bid
-            if spread > self.max_spread_points * self.point:
-                Logger.log(self.symbol, "FUSE", f"spread={spread/self.point:.1f} > {self.max_spread_points}pt, cooldown {self.extreme_cooldown}s")
+            spread_points = spread / self.point
+            if spread_points > self.max_spread_points:
+                Logger.log(self.symbol, "FUSE", f"spread={spread_points:.1f}pt > {self.max_spread_points}pt, mode={self.extreme_mode}, cooldown {self.extreme_cooldown}s")
+
+                # reduce_only: 取消所有挂单，避免极端点差下继续补单；freeze: 仅暂停维护
+                if str(self.extreme_mode).lower() == "reduce_only":
+                    self.clear_old_orders()
+
                 self.pause_until = now + self.extreme_cooldown
                 return
 
@@ -745,33 +892,42 @@ class GridStrategy:
         if self.use_atr:
             atr = self._calculate_atr()
             if atr:
-                # 动态调整步长
-                new_step = round(atr * self.atr_factor, 5)
-                
-                # 限制步长变化幅度，避免频繁修改
-                if abs(new_step - self.step) / self.step > self.atr_change_threshold:
-                    # 限制步长范围
-                    min_s = self.base_step * self.min_step_mult
-                    max_s = self.base_step * self.max_step_mult
-                    self.step = max(min_s, min(max_s, new_step))
-        
+                # 动态调整步长，并对齐到 point
+                new_step = self._normalize_step(atr * self.atr_factor)
+
+                # self.step 可能被热更新/状态恢复为 0，需要保护
+                if self.step <= 0:
+                    self.step = new_step
+                else:
+                    # 限制步长变化幅度，避免频繁修改
+                    change_ratio = abs(new_step - self.step) / self.step if self.step > 0 else 1.0
+                    if change_ratio > self.atr_change_threshold:
+                        # 限制步长范围
+                        min_s = self._normalize_step(self.base_step * self.min_step_mult)
+                        max_s = self._normalize_step(self.base_step * self.max_step_mult)
+                        self.step = max(min_s, min(max_s, new_step))
+
         # 价格基准：使用中间价
         mid_price = (tick.bid + tick.ask) / 2
         
         # 边界检查
-        if mid_price < self.min_price or mid_price > self.max_price:
+        in_range = (self.min_price <= mid_price <= self.max_price)
+
+        if not in_range:
             if self.out_of_range_action == "stop":
                 Logger.log(self.symbol, "STOP", f"mid {mid_price} out of range [{self.min_price}, {self.max_price}]")
                 self.enabled = False
                 self.clear_old_orders()
                 return
             elif self.out_of_range_action == "freeze":
-                # FIXED: freeze means do nothing (no trim/no add)
-                # Logger.log(self.symbol, "FREEZE", f"mid {mid_price} out of range, skip maintain")
+                # freeze: 不做 TRIM/补单，保留现有挂单与仓位
                 return
-            else:
-                # ignore mode
+            elif self.out_of_range_action == "ignore":
                 pass
+            else:
+                # 未知配置，按 freeze 处理更安全
+                Logger.log(self.symbol, "WARN", f"未知 out_of_range_action={self.out_of_range_action}，按 freeze 处理")
+                return
 
         # 1. 获取当前属于本实例的挂单和持仓
         if orders_list is not None:
@@ -910,14 +1066,17 @@ class GridStrategy:
         search_range_buy = self.buy_window + self.recenter_steps + 5
         search_range_sell = self.sell_window + self.recenter_steps + 5
 
-        # 只有在价格范围内才补单 (虽然前面有边界检查，但这里是生成逻辑)
-        if self.min_price <= mid_price <= self.max_price:
+        # 只有在价格范围内才补单；ignore 模式下放开边界过滤
+        min_bound = self.min_price if self.out_of_range_action != "ignore" else float("-inf")
+        max_bound = self.max_price if self.out_of_range_action != "ignore" else float("inf")
+
+        if in_range or self.out_of_range_action == "ignore":
             # 生成买单目标 (下方)
             if self.mode in ["neutral", "long"]:
                 # 从 0 开始，围绕 Anchor 向下铺设 (包含 Anchor 本身)
                 for i in range(0, search_range_buy):
                     level = self._normalize_price(self.anchor - (i * self.step))
-                    if level < tick.ask and level >= self.min_price:
+                    if level < tick.ask and level >= min_bound:
                         target_buys.append(level)
                 # 截取窗口大小
                 target_buys = target_buys[:self.buy_window]
@@ -927,7 +1086,7 @@ class GridStrategy:
                 # 从 0 开始，围绕 Anchor 向上铺设 (包含 Anchor 本身)
                 for i in range(0, search_range_sell):
                     level = self._normalize_price(self.anchor + (i * self.step))
-                    if level > tick.bid and level <= self.max_price:
+                    if level > tick.bid and level <= max_bound:
                         target_sells.append(level)
                 # 截取窗口大小
                 target_sells = target_sells[:self.sell_window]
@@ -938,14 +1097,16 @@ class GridStrategy:
         
         # A. TRIM (清理多余/超界挂单)
         target_set = set(target_buys + target_sells)
+        trimmed_count = 0
+
         for o in list(my_orders):
             if o.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT):
                 op = self._normalize_price(o.price_open)
                 should_remove = False
-                
+
                 if op not in target_set:
                     should_remove = True
-                
+
                 # 模式过滤
                 if o.type == mt5.ORDER_TYPE_BUY_LIMIT and self.mode == "short":
                     should_remove = True
@@ -958,12 +1119,28 @@ class GridStrategy:
                             mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                     else:
                         mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                    trimmed_count += 1
                     # Logger.log(self.symbol, "TRIM", f"撤单: {op}")
+
+        # TRIM 后刷新挂单集合，避免本轮继续使用旧 my_orders 造成漏补/风控偏差
+        if trimmed_count > 0:
+            if self.lock:
+                with self.lock:
+                    orders = mt5.orders_get(symbol=self.symbol)
+            else:
+                orders = mt5.orders_get(symbol=self.symbol)
+
+            my_orders = [o for o in (orders or []) if o.magic == self.magic and o.symbol == self.symbol]
 
         # B. 补单 (带库存风控)
         
         # 统计库存
         long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(my_positions, my_orders)
+
+        long_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_BUY)
+        short_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_SELL)
+        pending_buy_count = sum(1 for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT)
+        pending_sell_count = sum(1 for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT)
 
         existing_buy_prices = {self._normalize_price(o.price_open) for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT}
         existing_sell_prices = {self._normalize_price(o.price_open) for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT}
@@ -986,14 +1163,22 @@ class GridStrategy:
                     break
             if is_duplicate_pos: continue
 
-            # 风控检查
+            # 风控检查：仓位数/手数上限 + 净暴露
+            if self.max_long_pos is not None and (long_pos_count + pending_buy_count) >= int(self.max_long_pos):
+                break
+
             if not self._allow_side("buy", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol):
                 break
 
             if self._place_buy_order(price):
                 placed_count += 1
-                # 本地更新 net_vol 以便循环内即时生效
+
+                # 循环内即时更新本地库存，避免同一轮穿透风控
+                pending_buy_vol += self.lot
+                pending_buy_count += 1
                 net_vol += self.lot
+
+                existing_buy_prices.add(price)
 
         # 补卖单
         for price in target_sells:
@@ -1008,9 +1193,18 @@ class GridStrategy:
                     break
             if is_duplicate_pos: continue
 
+            # 风控检查：仓位数/手数上限 + 净暴露
+            if self.max_short_pos is not None and (short_pos_count + pending_sell_count) >= int(self.max_short_pos):
+                break
+
             if not self._allow_side("sell", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol):
                 break
 
             if self._place_sell_order(price):
                 placed_count += 1
+
+                pending_sell_vol += self.lot
+                pending_sell_count += 1
                 net_vol -= self.lot
+
+                existing_sell_prices.add(price)

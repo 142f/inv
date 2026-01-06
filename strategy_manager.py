@@ -55,8 +55,16 @@ class StrategyManager:
             self.mt5_client.ensure_symbol(strategy.symbol)
             Logger.log("SYSTEM", "UPDATE", f"策略 {strategy.magic} 品种变更为: {strategy.symbol}")
 
-        strategy.enabled = cfg.get("enabled", strategy.enabled)
-        strategy.step = cfg.get("step", strategy.step)
+        enabled_val = cfg.get("enabled", strategy.enabled)
+        if isinstance(enabled_val, str):
+            strategy.enabled = enabled_val.strip().lower() in ("1", "true", "yes", "y", "on")
+        else:
+            strategy.enabled = bool(enabled_val)
+
+        # step 更新需要同步 base_step，并对齐到 point，保证 ATR bounds 与网格一致
+        if "step" in cfg and cfg.get("step") is not None:
+            strategy.step = strategy._normalize_step(cfg.get("step"))
+            strategy.base_step = strategy.step
         strategy.tp_dist = cfg.get("tp_dist", strategy.tp_dist)
         strategy.lot = cfg.get("lot", strategy.lot)
         strategy.window = cfg.get("window", strategy.window)

@@ -78,7 +78,6 @@ class MT5Client:
         with self.lock:
             if mt5.terminal_info() is not None:
                 mt5.shutdown()
-                mt5.shutdown()
         Logger.log("SYSTEM", "SHUTDOWN", "MT5连接已关闭")
 
     def ensure_symbol(self, symbol: str):
