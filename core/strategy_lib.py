@@ -3,6 +3,7 @@ import MetaTrader5 as mt5
 import time
 import numpy as np
 from .logger import Logger
+from core.strategy.components import GridCalculator, RiskManager
 
 class _QueuedResult:
     def __init__(self):
@@ -98,6 +99,8 @@ class GridStrategy:
         self.bid_orders = {}
         self.ask_orders = {}
         self._action_collector = None
+        self.grid_calculator = GridCalculator(self._normalize_price)
+        self.risk_manager = RiskManager()
 
         # --- Anchor / Risk Control ---
         self.anchor = float(anchor) if anchor is not None else None
@@ -897,6 +900,17 @@ class GridStrategy:
         
         return self._dispatch_request(req)
 
+    def on_tick(self, ctx, *, action_collector=None):
+        return self.update(
+            orders_list=ctx.orders,
+            positions_list=ctx.positions,
+            tick=ctx.tick,
+            orders_filtered=True,
+            positions_filtered=True,
+            atr=ctx.atr,
+            action_collector=action_collector,
+        )
+
     def update(
         self,
         orders_list=None,
@@ -936,12 +950,22 @@ class GridStrategy:
             return
 
         # 极端点差闸门 (Fuse)
-        if self.max_spread_points is not None:
-            spread = tick.ask - tick.bid
-            if spread > self.max_spread_points * self.point:
-                Logger.log(self.symbol, "FUSE", f"spread={spread/self.point:>6.1f} > {self.max_spread_points:<6.1f}pt, cooldown {self.extreme_cooldown}s")
-                self.pause_until = now + self.extreme_cooldown
-                return
+        spread_check = self.risk_manager.check_spread(
+            bid=tick.bid,
+            ask=tick.ask,
+            max_spread_points=self.max_spread_points,
+            point=self.point,
+            extreme_cooldown=self.extreme_cooldown,
+            now=now,
+        )
+        if spread_check.triggered:
+            Logger.log(
+                self.symbol,
+                "FUSE",
+                f"spread={spread_check.spread/self.point:>6.1f} > {self.max_spread_points:<6.1f}pt, cooldown {self.extreme_cooldown}s",
+            )
+            self.pause_until = spread_check.pause_until
+            return
 
         # --- ATR 自适应步长逻辑 ---
         if self.use_atr:
@@ -962,19 +986,21 @@ class GridStrategy:
         mid_price = (tick.bid + tick.ask) / 2
         
         # 边界检查
-        if mid_price < self.min_price or mid_price > self.max_price:
-            if self.out_of_range_action == "stop":
-                Logger.log(self.symbol, "STOP", f"mid {mid_price} out of range [{self.min_price}, {self.max_price}]")
-                self.enabled = False
-                self.clear_old_orders()
-                return
-            elif self.out_of_range_action == "freeze":
-                # FIXED: freeze means do nothing (no trim/no add)
-                # Logger.log(self.symbol, "FREEZE", f"mid {mid_price} out of range, skip maintain")
-                return
-            else:
-                # ignore mode
-                pass
+        range_action = self.risk_manager.check_range(
+            mid_price=mid_price,
+            min_price=self.min_price,
+            max_price=self.max_price,
+            out_of_range_action=self.out_of_range_action,
+        )
+        if range_action == "stop":
+            Logger.log(self.symbol, "STOP", f"mid {mid_price} out of range [{self.min_price}, {self.max_price}]")
+            self.enabled = False
+            self.clear_old_orders()
+            return
+        if range_action == "freeze":
+            # FIXED: freeze means do nothing (no trim/no add)
+            # Logger.log(self.symbol, "FREEZE", f"mid {mid_price} out of range, skip maintain")
+            return
 
         # 1. 获取当前属于本实例的挂单和持仓
         if orders_list is not None:
@@ -1125,6 +1151,19 @@ class GridStrategy:
         # 2. 生成目标网格层级 (围绕 Anchor 固定生成)
         target_buys = []
         target_sells = []
+
+        target_buys, target_sells = self.grid_calculator.build_targets(
+            anchor=self.anchor,
+            step=self.step,
+            min_price=self.min_price,
+            max_price=self.max_price,
+            bid=tick.bid,
+            ask=tick.ask,
+            buy_window=self.buy_window,
+            sell_window=self.sell_window,
+            mode=self.mode,
+            recenter_steps=self.recenter_steps,
+        )
         
         # 搜索范围需要覆盖: window + recenter_steps + 缓冲
         # 防止因为 anchor 偏离导致生成的层级被过滤掉后数量不足
@@ -1132,7 +1171,7 @@ class GridStrategy:
         search_range_sell = self.sell_window + self.recenter_steps + 5
 
         # 只有在价格范围内才补单 (虽然前面有边界检查，但这里是生成逻辑)
-        if self.min_price <= mid_price <= self.max_price:
+        if False and self.min_price <= mid_price <= self.max_price:
             # 生成买单目标 (下方)
             if self.mode in ["neutral", "long"]:
                 # 从 0 开始，围绕 Anchor 向下铺设 (包含 Anchor 本身)

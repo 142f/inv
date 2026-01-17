@@ -4,6 +4,7 @@ from collections import defaultdict
 import MetaTrader5 as mt5
 
 from core.logger import Logger
+from core.runtime.context import StrategyContext
 from core.runtime.datafeed import DataFeed
 
 
@@ -111,15 +112,26 @@ class Runner:
                             strategy.atr_smooth,
                             strategy.atr_update_seconds,
                         )
-                    strategy.update(
-                        orders_list=orders_by_key[(magic, strategy.symbol)],
-                        positions_list=positions_by_key[(magic, strategy.symbol)],
+                    ctx = StrategyContext(
                         tick=ticks_by_symbol.get(strategy.symbol),
-                        orders_filtered=True,
-                        positions_filtered=True,
+                        orders=orders_by_key[(magic, strategy.symbol)],
+                        positions=positions_by_key[(magic, strategy.symbol)],
+                        account=acc,
                         atr=atr,
-                        action_collector=actions,
+                        now=time.time(),
                     )
+                    if hasattr(strategy, "on_tick"):
+                        strategy.on_tick(ctx, action_collector=actions)
+                    else:
+                        strategy.update(
+                            orders_list=ctx.orders,
+                            positions_list=ctx.positions,
+                            tick=ctx.tick,
+                            orders_filtered=True,
+                            positions_filtered=True,
+                            atr=ctx.atr,
+                            action_collector=actions,
+                        )
                     if actions:
                         for request in actions:
                             with self.broker.lock:
