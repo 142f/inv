@@ -1,10 +1,10 @@
 import argparse
 import os
 from core.logger import Logger
-from mt5_client import MT5Client
+from core.broker.mt5_adapter import MT5Broker
 from core.config.loader import ConfigLoader
 from core.strategy.manager import StrategyManager
-from runner import Runner
+from core.runtime.runner import Runner
 
 
 def parse_args(argv=None):
@@ -33,14 +33,14 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
 
-    mt5_client = MT5Client()
-    if not mt5_client.initialize():
+    broker = MT5Broker()
+    if not broker.initialize():
         Logger.log("SYSTEM", "ERROR", "系统初始化失败")
         return 1
 
     config_loader = ConfigLoader()
-    strategy_manager = StrategyManager(mt5_client, config_loader)
-    runner = Runner(mt5_client, strategy_manager)
+    strategy_manager = StrategyManager(broker, config_loader)
+    runner = Runner(broker, strategy_manager)
 
     Logger.log(
         "SYSTEM",
@@ -55,7 +55,7 @@ def main(argv=None):
     except Exception as exc:
         Logger.log("SYSTEM", "ERROR", f"运行异常: {exc}")
     finally:
-        mt5_client.shutdown()
+        broker.shutdown()
 
     return 0
 

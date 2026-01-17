@@ -1,9 +1,12 @@
+import atexit
 import logging
 import os
+import queue
 import sys
 import time
+import unicodedata
 from datetime import datetime
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 
 
@@ -29,12 +32,36 @@ class Logger:
     _logger = None
     _last_emit_ts = {}
     _enable_console = False
+    _symbol_width = 12
+    _action_width = 8
+    _listener = None
+    _queue = None
+
+    @staticmethod
+    def _display_width(text: str) -> int:
+        width = 0
+        for ch in text:
+            if unicodedata.east_asian_width(ch) in {"F", "W"}:
+                width += 2
+            else:
+                width += 1
+        return width
+
+    @classmethod
+    def _pad_display(cls, text: str, width: int) -> str:
+        text = str(text)
+        pad = width - cls._display_width(text)
+        if pad <= 0:
+            return text
+        return text + (" " * pad)
+
 
     @classmethod
     def _ensure_logger(cls):
         if cls._logger is None:
             cls._logger = logging.getLogger("GridTrading")
             cls._logger.setLevel(logging.INFO)
+            cls._logger.propagate = False
 
             if not cls._logger.handlers:
                 cls._enable_console = os.getenv("INV_LOG_CONSOLE", "1").strip().lower() in {
@@ -45,22 +72,51 @@ class Logger:
                     "on",
                 }
 
+                handlers = []
+
+                class _MessageFormatter(logging.Formatter):
+                    def __init__(self, message_attr, *args, **kwargs):
+                        super().__init__(*args, **kwargs)
+                        self.message_attr = message_attr
+
+                    def format(self, record):
+                        if hasattr(record, self.message_attr):
+                            record.msg = getattr(record, self.message_attr)
+                            record.args = ()
+                        return super().format(record)
+
                 if cls._enable_console:
                     console_handler = logging.StreamHandler(sys.stdout)
-                    console_format = logging.Formatter("%(asctime)s | %(message)s", datefmt="%H:%M:%S")
+                    console_format = _MessageFormatter(
+                        "console_msg", "%(asctime)s | %(message)s", datefmt="%H:%M:%S"
+                    )
                     console_handler.setFormatter(console_format)
-                    cls._logger.addHandler(console_handler)
+                    handlers.append(console_handler)
 
                 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
                 file_handler = RotatingFileHandler(
                     LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
                 )
-                file_format = logging.Formatter(
-                    "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+                file_format = _MessageFormatter(
+                    "file_msg", "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
                 )
                 file_handler.setFormatter(file_format)
-                cls._logger.addHandler(file_handler)
+                handlers.append(file_handler)
+
+                cls._queue = queue.Queue(-1)
+                queue_handler = QueueHandler(cls._queue)
+                cls._logger.addHandler(queue_handler)
+
+                cls._listener = QueueListener(cls._queue, *handlers, respect_handler_level=True)
+                cls._listener.start()
+                atexit.register(cls._stop_listener)
+
+    @classmethod
+    def _stop_listener(cls):
+        if cls._listener:
+            cls._listener.stop()
+            cls._listener = None
 
     @staticmethod
     def log(symbol, action, message, level="info"):
@@ -92,6 +148,12 @@ class Logger:
             "STOP": "策略停止",
             "HALT": "熔断暂停",
             "SHUTDOWN": "系统关闭",
+            "STATS_RESET": "统计重置",
+            "INIT": "初始化",
+            "RECENTER": "锚点平移",
+            "FUSE": "点差熔断",
+            "HEDGE_ADD": "对冲加仓",
+            "HEDGE_EXIT": "对冲平仓",
         }
 
         action_cn = action_map.get(action, action)
@@ -122,33 +184,38 @@ class Logger:
                 return
             Logger._last_emit_ts[key] = now
 
-        file_msg = f"{symbol:<10} | 【{action_cn}】 | {message}"
+        # 统一格式：symbol对齐12字符，action对齐8字符，消息保持原样
+        symbol_pad = Logger._pad_display(symbol, Logger._symbol_width)
+        action_pad = Logger._pad_display(action_cn, Logger._action_width)
+        file_msg = f"{symbol_pad} | [{action_pad}] | {message}"
 
-        if Logger._enable_console:
-            color = Colors.RESET
-            if level.upper() == "ERROR" or action in {"ERROR", "EXCEPTION", "CRITICAL", "ORDER_FAIL"}:
-                color = Colors.RED
-            elif level.upper() == "WARN" or action in {"WARN", "HALT", "SLEEP"}:
-                color = Colors.YELLOW
-            elif action in {"ORDER_SENT", "ADD", "START", "RELOAD"}:
-                color = Colors.GREEN
-            elif action in {"STATUS", "ACCOUNT"}:
-                color = Colors.CYAN
-            elif action in {"TRIM", "CLEANUP", "REMOVE"}:
-                color = Colors.MAGENTA
-            elif action in {"SKIP", "DEBUG"}:
-                color = Colors.GREY
+        color = Colors.RESET
+        if level.upper() == "ERROR" or action in {"ERROR", "EXCEPTION", "CRITICAL", "ORDER_FAIL"}:
+            color = Colors.RED
+        elif level.upper() == "WARN" or action in {"WARN", "HALT", "SLEEP"}:
+            color = Colors.YELLOW
+        elif action in {"ORDER_SENT", "ADD", "START", "RELOAD"}:
+            color = Colors.GREEN
+        elif action in {"STATUS", "ACCOUNT"}:
+            color = Colors.CYAN
+        elif action in {"TRIM", "CLEANUP", "REMOVE"}:
+            color = Colors.MAGENTA
+        elif action in {"SKIP", "DEBUG"}:
+            color = Colors.GREY
 
-            console_msg = f"{color}{symbol:<10} | 【{action_cn}】 | {message}{Colors.RESET}"
+        console_msg = f"{color}{symbol_pad} | [{action_pad}] | {message}{Colors.RESET}"
 
-            for handler in Logger._logger.handlers:
-                if isinstance(handler, RotatingFileHandler):
-                    record = logging.LogRecord("GridTrading", logging.INFO, "", 0, file_msg, (), None)
-                    record.created = time.time()
-                    handler.emit(record)
-                elif isinstance(handler, logging.StreamHandler):
-                    record = logging.LogRecord("GridTrading", logging.INFO, "", 0, console_msg, (), None)
-                    record.created = time.time()
-                    handler.emit(record)
-        else:
-            Logger._logger.info(file_msg)
+        level_map = {
+            "debug": logging.DEBUG,
+            "info": logging.INFO,
+            "warn": logging.WARNING,
+            "warning": logging.WARNING,
+            "error": logging.ERROR,
+            "critical": logging.CRITICAL,
+        }
+        levelno = level_map.get(str(level).lower(), logging.INFO)
+        record = logging.LogRecord("GridTrading", levelno, "", 0, file_msg, (), None)
+        record.file_msg = file_msg
+        record.console_msg = console_msg
+        record.created = time.time()
+        Logger._logger.handle(record)

@@ -1,14 +1,19 @@
 # strategy_lib.py
 import MetaTrader5 as mt5
 import time
-import math
 import numpy as np
 from .logger import Logger
+
+class _QueuedResult:
+    def __init__(self):
+        self.retcode = mt5.TRADE_RETCODE_DONE
+        self.comment = "QUEUED"
+        self.order = 0
 
 class GridStrategy:
     def __init__(self, symbol, step, tp_dist, lot, magic, 
                  window=6, min_p=0, max_p=999999, enabled=True, 
-                 use_atr=False, atr_period=14, atr_factor=1.0,
+                 use_atr=False, atr_period=14, atr_factor=1.0, atr_mode="wilder", atr_timeframe="M15",
                  mode="neutral", buy_window=None, sell_window=None, 
                  out_of_range_action="freeze", 
                  atr_update_seconds=5, atr_smooth=0.1, atr_change_threshold=0.01,
@@ -52,6 +57,8 @@ class GridStrategy:
         :param use_atr: 是否启用 ATR 自适应步长
         :param atr_period: ATR 计算周期 (默认 14)
         :param atr_factor: ATR 乘数 (Step = ATR * factor)
+        :param atr_mode: ATR 模式: "wilder" | "ema" | "sma"
+        :param atr_timeframe: ATR 时间周期 (例如 "M15", "H1")
         :param mode: "neutral" | "long" | "short"
         :param buy_window: 买单窗口大小 (默认等于 window)
         :param sell_window: 卖单窗口大小 (默认等于 window)
@@ -71,6 +78,8 @@ class GridStrategy:
         self.use_atr = use_atr
         self.atr_period = atr_period
         self.atr_factor = atr_factor
+        self.atr_mode = atr_mode
+        self.atr_timeframe = atr_timeframe
         
         # 新增参数
         self.mode = mode
@@ -86,6 +95,9 @@ class GridStrategy:
         self.max_step_mult = max_step_mult
         
         self.lock = lock
+        self.bid_orders = {}
+        self.ask_orders = {}
+        self._action_collector = None
 
         # --- Anchor / Risk Control ---
         self.anchor = float(anchor) if anchor is not None else None
@@ -104,11 +116,8 @@ class GridStrategy:
         self.extreme_cooldown = float(extreme_cooldown)
         self.max_new_orders_per_update = int(max_new_orders_per_update)
         
-        # --- Hedge params ---        # hedge_enabled 可能来自配置文件/环境变量（字符串），需要安全解析
-        if isinstance(hedge_enabled, str):
-            self.hedge_enabled = hedge_enabled.strip().lower() in ("1", "true", "yes", "y", "on")
-        else:
-            self.hedge_enabled = bool(hedge_enabled)
+        # --- Hedge params ---
+        self.hedge_enabled = bool(hedge_enabled)
         self.hedge_fraction = float(hedge_fraction)
         self.hedge_tranches = int(hedge_tranches)
         self.hedge_entry_steps = int(hedge_entry_steps)
@@ -142,16 +151,20 @@ class GridStrategy:
         self._last_status_log_time = 0
         self._status_log_interval = 60 # 默认60秒打印一次状态
         
+        # 统计分析相关属性
+        self._stats = {
+            'magic': self.magic,
+            'start_time': time.time(),
+            'last_reset_time': time.time(),
+            'long_profitable_count': 0,
+            'long_profitable_amount': 0.0,
+            'short_profitable_count': 0,
+            'short_profitable_amount': 0.0,
+            'last_stats_update_time': 0
+        }
+        
         # [优化] 缓存静态 Symbol 信息
         self._cache_symbol_info()
-
-        # 对齐 step 到品种的最小跳动（point），减少浮点/舍入导致的重复层级与抖动
-        self.step = self._normalize_step(self.step)
-        self.base_step = self.step
-
-        # anchor 若由外部传入，统一规范到 digits
-        if self.anchor is not None:
-            self.anchor = self._normalize_price(self.anchor)
 
     def get_state(self):
         """获取策略内部状态，用于配置同步时保持状态"""
@@ -165,50 +178,144 @@ class GridStrategy:
             '_last_recenter_time': self._last_recenter_time,
             "_last_hedge_time": self._last_hedge_time,
             "_last_hedge_entry_price": self._last_hedge_entry_price,
+            '_stats': self._stats
         }
 
     def set_state(self, state):
         """恢复策略内部状态"""
-        if not state:
+        if state:
+            self.pause_until = state.get('pause_until', self.pause_until)
+            self.enabled = state.get('enabled', self.enabled)
+            self._last_atr_value = state.get('_last_atr_value', self._last_atr_value)
+            self._last_tick_time = state.get('_last_tick_time', self._last_tick_time)
+            self._last_atr_time = state.get('_last_atr_time', self._last_atr_time)
+            self.anchor = state.get('anchor', self.anchor)
+            self._last_recenter_time = state.get('_last_recenter_time', self._last_recenter_time)
+            self._last_hedge_time = float(state.get("_last_hedge_time", self._last_hedge_time) or 0.0)
+            self._last_hedge_entry_price = state.get("_last_hedge_entry_price", self._last_hedge_entry_price)
+            # 恢复统计数据
+            if '_stats' in state:
+                self._stats = state['_stats']
+
+
+    def _reset_stats(self):
+        """重置统计数据"""
+        self._stats = {
+            'magic': self.magic,
+            'start_time': self._stats['start_time'],  # 保持原始开始时间
+            'last_reset_time': time.time(),
+            'long_profitable_count': 0,
+            'long_profitable_amount': 0.0,
+            'short_profitable_count': 0,
+            'short_profitable_amount': 0.0,
+            'last_stats_update_time': 0
+        }
+        Logger.log(self.symbol, "STATS_RESET", f"策略 {self.magic} 统计数据已重置，新的计算周期开始")
+
+    def _deal_net_profit(self, deal) -> float:
+        profit = float(getattr(deal, "profit", 0.0) or 0.0)
+        swap = float(getattr(deal, "swap", 0.0) or 0.0)
+        commission = float(getattr(deal, "commission", 0.0) or 0.0)
+        return profit + swap + commission
+
+    def _update_stats(self):
+        """更新统计数据"""
+        now = time.time()
+        # 限制更新频率，避免频繁调用MT5 API
+        if now - self._stats['last_stats_update_time'] < 300:  # 每5分钟更新一次
+            return
+        
+        try:
+            # 获取历史成交记录
+            if self.lock:
+                with self.lock:
+                    # 获取最近的成交记录（从last_reset_time开始）
+                    deals = mt5.history_deals_get(symbol=self.symbol, group="*", start=self._stats['last_reset_time'])
+            else:
+                deals = mt5.history_deals_get(symbol=self.symbol, group="*", start=self._stats['last_reset_time'])
+            
+            if deals:
+                # 重置当前统计周期的数据
+                long_profitable_count = 0
+                long_profitable_amount = 0.0
+                short_profitable_count = 0
+                short_profitable_amount = 0.0
+                
+                # 按订单分组统计
+                orders = {}
+                for deal in deals:
+                    if deal.magic != self.magic:
+                        continue
+                    if deal.order in orders:
+                        orders[deal.order].append(deal)
+                    else:
+                        orders[deal.order] = [deal]
+                
+                # 统计每个订单的盈利情况
+                for order_ticket, deal_list in orders.items():
+                    # 计算订单的总盈利(含 swap/commission)
+                    total_profit = sum(self._deal_net_profit(deal) for deal in deal_list)
+                    
+                    # 确定订单类型（多单或空单）
+                    order_type = None
+                    for deal in deal_list:
+                        if deal.type == mt5.DEAL_TYPE_BUY:
+                            order_type = "long"
+                            break
+                        elif deal.type == mt5.DEAL_TYPE_SELL:
+                            order_type = "short"
+                            break
+                    
+                    # 统计盈利订单
+                    if total_profit > 0:
+                        if order_type == "long":
+                            long_profitable_count += 1
+                            long_profitable_amount += total_profit
+                        elif order_type == "short":
+                            short_profitable_count += 1
+                            short_profitable_amount += total_profit
+                
+                # 更新统计数据
+                self._stats['long_profitable_count'] = long_profitable_count
+                self._stats['long_profitable_amount'] = long_profitable_amount
+                self._stats['short_profitable_count'] = short_profitable_count
+                self._stats['short_profitable_amount'] = short_profitable_amount
+                self._stats['last_stats_update_time'] = now
+                
+        except Exception as e:
+            Logger.log(self.symbol, "EXCEPTION", f"更新统计数据异常: {str(e)}")
+
+    def set_symbol(self, new_symbol: str, *, reset_runtime_state: bool = True):
+        """切换交易品种，并刷新品种信息缓存。
+
+        为什么需要它：digits/point/stop_level/最小下单量等都是按 symbol 缓存的，
+        直接改 self.symbol 会导致后续归一化/风控使用旧品种参数。
+
+        :param reset_runtime_state: True 时会清空 anchor、ATR 缓存、对冲运行态等，避免跨品种串状态。
+        """
+        if not new_symbol or new_symbol == self.symbol:
             return
 
-        def _to_float(v, default):
-            try:
-                if v is None:
-                    return default
-                return float(v)
-            except (TypeError, ValueError):
-                return default
+        self.symbol = new_symbol
+        # 刷新品种静态信息缓存
+        self._cache_symbol_info()
 
-        def _to_bool(v, default):
-            if v is None:
-                return default
-            if isinstance(v, bool):
-                return v
-            if isinstance(v, str):
-                s = v.strip().lower()
-                if s in ("1", "true", "yes", "y", "on"):
-                    return True
-                if s in ("0", "false", "no", "n", "off"):
-                    return False
-            return bool(v)
+        if reset_runtime_state:
+            self.anchor = None
+            self._last_recenter_time = 0.0
+            self.pause_until = 0.0
 
-        self.pause_until = _to_float(state.get('pause_until', self.pause_until), self.pause_until)
-        self.enabled = _to_bool(state.get('enabled', self.enabled), self.enabled)
-        self._last_atr_value = _to_float(state.get('_last_atr_value', self._last_atr_value), self._last_atr_value)
-        self._last_tick_time = _to_float(state.get('_last_tick_time', self._last_tick_time), self._last_tick_time)
-        self._last_atr_time = _to_float(state.get('_last_atr_time', self._last_atr_time), self._last_atr_time)
+            # ATR 缓存
+            self._last_atr_value = None
+            self._last_atr_time = 0.0
 
-        anchor_val = state.get('anchor', self.anchor)
-        self.anchor = None if anchor_val is None else _to_float(anchor_val, self.anchor if self.anchor is not None else 0.0)
+            # 对冲运行态
+            self._last_hedge_time = 0.0
+            self._last_hedge_entry_price = None
 
-        self._last_recenter_time = _to_float(state.get('_last_recenter_time', self._last_recenter_time), self._last_recenter_time)
-        self._last_hedge_time = _to_float(state.get('_last_hedge_time', self._last_hedge_time), self._last_hedge_time) or 0.0
-
-        entry_val = state.get('_last_hedge_entry_price', self._last_hedge_entry_price)
-        self._last_hedge_entry_price = None if entry_val is None else _to_float(entry_val, self._last_hedge_entry_price if self._last_hedge_entry_price is not None else 0.0)
-
-
+            # 行情缓存
+            self._rates_cache_ts = 0.0
+            self._rates_cache = None
     def _cache_symbol_info(self):
         if self.lock:
             with self.lock:
@@ -237,45 +344,12 @@ class GridStrategy:
     def _normalize_price(self, price):
         return float(round(price, self.digits))
 
-    def _normalize_step(self, step):
-        """把 step 对齐到 symbol 的 point，避免浮点导致网格层级重复/抖动"""
-        try:
-            step = float(step)
-        except (TypeError, ValueError):
-            return 0.0
-        if step <= 0:
-            return step
-        if getattr(self, "point", None) and self.point > 0:
-            ticks = max(1, int(round(step / self.point)))
-            return float(ticks * self.point)
-        return step
-
     def _normalize_volume(self, vol):
-        """按 volume_step 取整并限制在 [volume_min, volume_max]"""
-        if vol is None:
-            return None
-
-        try:
-            vol = float(vol)
-        except (TypeError, ValueError):
-            return None
-
-        if self.volume_min is not None:
-            vol = max(vol, float(self.volume_min))
-        if self.volume_max is not None:
-            vol = min(vol, float(self.volume_max))
-
-        step = float(self.volume_step) if self.volume_step else 0.0
-        if step > 0:
-            steps = math.floor((vol + 1e-12) / step)
-            vol = steps * step
-
-            s = f"{step:.12f}".rstrip("0").rstrip(".")
-            decimals = 0 if "." not in s else len(s.split(".")[1])
-        else:
-            decimals = 2
-
-        return float(round(vol, decimals))
+        # 简单的步长取整
+        if self.vol_step > 0:
+            steps = round(vol / self.vol_step)
+            vol = steps * self.vol_step
+        return float(round(max(self.vol_min, min(self.vol_max, vol)), 2))
 
     def _get_grid_level(self, price, anchor):
         """以 anchor 为锚点，把 price snap 到最近的网格线"""
@@ -286,21 +360,14 @@ class GridStrategy:
     def _init_anchor_if_needed(self, mid_price):
         if self.anchor is None:
             # 用当前价格作为初始anchor，并snap到网格线上
-            if self.step <= 0:
-                self.anchor = self._normalize_price(mid_price)
-                Logger.log(self.symbol, "WARN", f"step<=0，无法初始化网格，对齐 anchor={self.anchor}")
-                return
             base0 = round(mid_price / self.step) * self.step
             self.anchor = self._normalize_price(base0)
-            Logger.log(self.symbol, "INIT", f"初始化 Anchor: {self.anchor}")
+            Logger.log(self.symbol, "INIT", f"初始化 Anchor: {self.anchor:.{self.digits}f}")
 
     def _maybe_recenter(self, mid_price):
         """触发条件：偏离>=recenter_steps*step 且超过冷却时间"""
         now = time.time()
         if now - self._last_recenter_time < self.recenter_cooldown:
-            return False
-
-        if self.step <= 0 or self.anchor is None:
             return False
 
         drift_steps = (mid_price - self.anchor) / self.step
@@ -311,41 +378,73 @@ class GridStrategy:
         new_anchor = self._get_grid_level(mid_price, self.anchor)
         self.anchor = self._normalize_price(new_anchor)
         self._last_recenter_time = now
-        Logger.log(self.symbol, "RECENTER", f"Anchor 平移 -> {self.anchor} (mid={mid_price:.2f})")
+        Logger.log(self.symbol, "RECENTER", f"Anchor 平移 -> {self.anchor:.{self.digits}f} (mid={mid_price:.{self.digits}f})")
         return True
 
+    def _resolve_timeframe(self):
+        timeframe = str(self.atr_timeframe or "M15").upper()
+        mapping = {
+            "M1": mt5.TIMEFRAME_M1,
+            "M5": mt5.TIMEFRAME_M5,
+            "M15": mt5.TIMEFRAME_M15,
+            "M30": mt5.TIMEFRAME_M30,
+            "H1": mt5.TIMEFRAME_H1,
+            "H4": mt5.TIMEFRAME_H4,
+            "D1": mt5.TIMEFRAME_D1,
+        }
+        return mapping.get(timeframe, mt5.TIMEFRAME_M15)
+
     def _calculate_atr(self):
-        """计算 ATR (简单移动平均算法) - 向量化优化 + 平滑 + 缓存"""
+        """?? ATR (Wilder/EMA/SMA) - ????? + ?? + ??"""
         current_time = time.time()
         if current_time - self._last_atr_time < self.atr_update_seconds:
             return self._last_atr_value
 
-        # 获取足够的数据: period + 1 根 K 线 (M15 周期)
+        # ???????: period + 1 ?K?
         if self.lock:
             with self.lock:
-                rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M15, 0, self.atr_period + 1)
+                rates = mt5.copy_rates_from_pos(self.symbol, self._resolve_timeframe(), 0, self.atr_period + 1)
         else:
-            rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M15, 0, self.atr_period + 1)
-            
+            rates = mt5.copy_rates_from_pos(self.symbol, self._resolve_timeframe(), 0, self.atr_period + 1)
+
         if rates is None or len(rates) < self.atr_period + 1:
-            return None
-            
-        # 使用 numpy 向量化计算 (mt5 返回的是 numpy 结构化数组)
-        high = rates['high'][1:]
-        low = rates['low'][1:]
-        close_prev = rates['close'][:-1]
-        
+            return self._last_atr_value
+
+        # ?? numpy ?????(mt5 ???? numpy ?????)
+        high = rates["high"][1:]
+        low = rates["low"][1:]
+        close_prev = rates["close"][:-1]
+
         tr = np.maximum(high - low, np.abs(high - close_prev))
         tr = np.maximum(tr, np.abs(low - close_prev))
-        
-        raw_atr = np.mean(tr)
-        
-        # 平滑处理
-        if self._last_atr_value is None:
-            self._last_atr_value = raw_atr
+
+        mode = str(self.atr_mode or "wilder").lower()
+        if mode == "sma":
+            raw_atr = float(np.mean(tr))
         else:
-            self._last_atr_value = (self._last_atr_value * (1 - self.atr_smooth)) + (raw_atr * self.atr_smooth)
-            
+            last_tr = float(tr[-1])
+            if self._last_atr_value is None:
+                raw_atr = float(np.mean(tr))
+            elif mode == "ema":
+                alpha = 2.0 / (self.atr_period + 1.0)
+                raw_atr = (self._last_atr_value * (1 - alpha)) + (last_tr * alpha)
+            else:
+                # Wilder's smoothing (default)
+                raw_atr = (self._last_atr_value * (self.atr_period - 1) + last_tr) / self.atr_period
+
+        # ?????????
+        if self.atr_smooth:
+            if self._last_atr_value is None:
+                self._last_atr_value = raw_atr
+            else:
+                smooth = float(self.atr_smooth)
+                if 0 < smooth < 1:
+                    self._last_atr_value = (self._last_atr_value * (1 - smooth)) + (raw_atr * smooth)
+                else:
+                    self._last_atr_value = raw_atr
+        else:
+            self._last_atr_value = raw_atr
+
         self._last_atr_time = current_time
         return self._last_atr_value
 
@@ -363,6 +462,32 @@ class GridStrategy:
         if abs(time.time() - tick.time) > 600:
             return False
         return True
+
+    def _queue_action(self, request):
+        if self._action_collector is None:
+            return False
+        self._action_collector.append(request)
+        return True
+
+    def _dispatch_request(self, request):
+        if self._action_collector is not None:
+            self._action_collector.append(request)
+            return _QueuedResult()
+        if self.lock:
+            with self.lock:
+                return mt5.order_send(request)
+        return mt5.order_send(request)
+
+    def _index_orders(self, my_orders):
+        self.bid_orders = {}
+        self.ask_orders = {}
+        for o in my_orders:
+            if o.type == mt5.ORDER_TYPE_BUY_LIMIT:
+                op = self._normalize_price(o.price_open)
+                self.bid_orders.setdefault(op, []).append(o)
+            elif o.type == mt5.ORDER_TYPE_SELL_LIMIT:
+                op = self._normalize_price(o.price_open)
+                self.ask_orders.setdefault(op, []).append(o)
 
     def _place_buy_order(self, price):
         """内部方法：发送带止盈的买单"""
@@ -385,11 +510,16 @@ class GridStrategy:
                 "type_filling": mt5.ORDER_FILLING_RETURN,
             }
             
-            if self.lock:
-                with self.lock:
-                    result = mt5.order_send(request)
-            else:
-                result = mt5.order_send(request)
+            if self._action_collector is not None:
+                self._queue_action(request)
+                Logger.log(
+                    self.symbol,
+                    "ORDER_SENT",
+                    f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} (queued)",
+                )
+                return True
+            
+            result = self._dispatch_request(request)
             
             if result is None:
                 last_error = mt5.last_error()
@@ -399,11 +529,7 @@ class GridStrategy:
             # 填充模式兼容
             if result.retcode == 10030: 
                 del request["type_filling"]
-                if self.lock:
-                    with self.lock:
-                        result = mt5.order_send(request)
-                else:
-                    result = mt5.order_send(request)
+                result = self._dispatch_request(request)
                 
                 if result is None:
                     last_error = mt5.last_error()
@@ -425,11 +551,7 @@ class GridStrategy:
                         
                     if tick:
                         # 重新获取价格并重试 (这里其实应该重新计算 price，但为了简单重试原价)
-                        if self.lock:
-                            with self.lock:
-                                result = mt5.order_send(request)
-                        else:
-                            result = mt5.order_send(request)
+                        result = self._dispatch_request(request)
                         
                         if result is None:
                             last_error = mt5.last_error()
@@ -437,13 +559,13 @@ class GridStrategy:
                             return None
                             
                         if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                            Logger.log(self.symbol, "ORDER_SENT", f"BUY LIMIT: {price:<10.2f} | TP: {tp:<10.2f} | Magic: {self.magic} (重试)")
+                            Logger.log(self.symbol, "ORDER_SENT", f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} (重试)")
                             return result.order
 
                 self._handle_order_error(result.retcode, result.comment, price)
                 return None
                 
-            Logger.log(self.symbol, "ORDER_SENT", f"BUY LIMIT: {price:<10.2f} | TP: {tp:<10.2f} | Magic: {self.magic}")
+            Logger.log(self.symbol, "ORDER_SENT", f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic}")
             return result.order
             
         except Exception as e:
@@ -473,11 +595,16 @@ class GridStrategy:
                 "type_filling": mt5.ORDER_FILLING_RETURN,
             }
             
-            if self.lock:
-                with self.lock:
-                    result = mt5.order_send(request)
-            else:
-                result = mt5.order_send(request)
+            if self._action_collector is not None:
+                self._queue_action(request)
+                Logger.log(
+                    self.symbol,
+                    "ORDER_SENT",
+                    f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} (queued)",
+                )
+                return True
+            
+            result = self._dispatch_request(request)
             
             if result is None:
                 last_error = mt5.last_error()
@@ -487,11 +614,7 @@ class GridStrategy:
             # 填充模式兼容
             if result.retcode == 10030: 
                 del request["type_filling"]
-                if self.lock:
-                    with self.lock:
-                        result = mt5.order_send(request)
-                else:
-                    result = mt5.order_send(request)
+                result = self._dispatch_request(request)
                 
                 if result is None:
                     last_error = mt5.last_error()
@@ -506,9 +629,9 @@ class GridStrategy:
                     time.sleep(0.1)
                     if self.lock:
                         with self.lock:
-                            result = mt5.order_send(request)
+                            result = self._dispatch_request(request)
                     else:
-                        result = mt5.order_send(request)
+                        result = self._dispatch_request(request)
                     
                     if result is None:
                         last_error = mt5.last_error()
@@ -516,13 +639,13 @@ class GridStrategy:
                         return None
                         
                     if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                            Logger.log(self.symbol, "ORDER_SENT", f"SELL LIMIT: {price:<10.2f} | TP: {tp:<10.2f} | Magic: {self.magic} (重试)")
+                            Logger.log(self.symbol, "ORDER_SENT", f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} (重试)")
                             return result.order
 
                 self._handle_order_error(result.retcode, result.comment, price)
                 return None
                 
-            Logger.log(self.symbol, "ORDER_SENT", f"SELL LIMIT: {price:<10.2f} | TP: {tp:<10.2f} | Magic: {self.magic}")
+            Logger.log(self.symbol, "ORDER_SENT", f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic}")
             return result.order
             
         except Exception as e:
@@ -559,20 +682,13 @@ class GridStrategy:
                 orders = mt5.orders_get(symbol=self.symbol)
         else:
             orders = mt5.orders_get(symbol=self.symbol)
-
+            
         if orders:
             for o in orders:
                 if o.magic == self.magic:
-                    if self.lock:
-                        with self.lock:
-                            res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
-                    else:
-                        res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
-
+                    res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                     if res is None:
-                        Logger.log(self.symbol, "WARN", f"撤单返回 None: ticket={o.ticket}, err={mt5.last_error()}")
                         continue
-
                     if res.retcode == 10018: # MARKET_CLOSED
                         Logger.log(self.symbol, "WARN", "市场休市，无法撤单，暂停运行 5 分钟")
                         self.pause_until = time.time() + 300
@@ -596,57 +712,13 @@ class GridStrategy:
     def _allow_side(self, side, long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol):
         """
         side: "buy" or "sell"
-
-        额外风控：
-          - max_gross_vol: 限制总暴露（持仓+挂单）
-          - max_long_vol / max_short_vol: 限制单边暴露（持仓+挂单）
-
-        mode handling (max_net_vol):
+        mode handling:
           - neutral: abs(net) <= max_net_vol
-          - long:    cap long exposure by max_net_vol (允许 sell 用于止盈/再平衡)
-          - short:   cap short exposure by max_net_vol (允许 buy 用于止盈/再平衡)
+          - long:    cap long exposure by max_net_vol
+          - short:   cap short exposure by max_net_vol
         """
-        lot = float(self.lot)
-
-        gross = float(long_vol + short_vol + pending_buy_vol + pending_sell_vol)
-        if self.max_gross_vol is not None:
-            if gross + lot > float(self.max_gross_vol):
-                return False
-
-        if side == "buy" and self.max_long_vol is not None:
-            if (float(long_vol) + float(pending_buy_vol) + lot) > float(self.max_long_vol):
-                return False
-
-        if side == "sell" and self.max_short_vol is not None:
-            if (float(short_vol) + float(pending_sell_vol) + lot) > float(self.max_short_vol):
-                return False
-
         if self.max_net_vol is None:
             return True
-
-        cap = float(self.max_net_vol)
-
-        if self.mode == "neutral":
-            if side == "buy":
-                return abs(net_vol + lot) <= cap
-            else:
-                return abs(net_vol - lot) <= cap
-
-        if self.mode == "long":
-            total_long = float(long_vol + pending_buy_vol)
-            if side == "buy":
-                return (total_long + lot) <= cap
-            else:
-                return True
-
-        if self.mode == "short":
-            total_short = float(short_vol + pending_sell_vol)
-            if side == "sell":
-                return (total_short + lot) <= cap
-            else:
-                return True
-
-        return True
 
         cap = float(self.max_net_vol)
 
@@ -725,23 +797,16 @@ class GridStrategy:
         return (thr is not None and cur >= thr), cur, thr
 
     def _volume_gate(self, rates):
-        base = int(self.hedge_vol_base) if self.hedge_vol_base is not None else 0
-        win = int(self.hedge_vol_window) if self.hedge_vol_window is not None else 0
-        mult = float(self.hedge_vol_mult) if self.hedge_vol_mult is not None else 0.0
-
-        if base <= 0 or win <= 0:
-            return False, None, None
-
+        base = self.hedge_vol_base
+        win = self.hedge_vol_window
+        mult = self.hedge_vol_mult
         v = [float(x["tick_volume"]) for x in rates]
         if len(v) < base + win + 10:
             return False, None, None
-
         cur = sum(v[-win:]) / win
         basev = sum(v[-(base + win):-win]) / base
-
         if basev <= 0:
             return False, cur, basev
-
         return cur >= mult * basev, cur, basev
 
     def _open_hedge_sell(self, vol):
@@ -769,11 +834,7 @@ class GridStrategy:
             "type_filling": mt5.ORDER_FILLING_RETURN,
         }
         
-        if self.lock:
-            with self.lock:
-                return mt5.order_send(req)
-        else:
-            return mt5.order_send(req)
+        return self._dispatch_request(req)
 
     def _close_sell_position(self, pos_ticket, vol):
         if self.lock:
@@ -801,11 +862,7 @@ class GridStrategy:
             "type_filling": mt5.ORDER_FILLING_RETURN,
         }
         
-        if self.lock:
-            with self.lock:
-                return mt5.order_send(req)
-        else:
-            return mt5.order_send(req)
+        return self._dispatch_request(req)
 
     def _move_sell_sl_to_breakeven(self, pos):
         if self.lock:
@@ -838,14 +895,21 @@ class GridStrategy:
             "comment": "HEDGE_BE",
         }
         
-        if self.lock:
-            with self.lock:
-                return mt5.order_send(req)
-        else:
-            return mt5.order_send(req)
+        return self._dispatch_request(req)
 
-    def update(self, orders_list=None, positions_list=None):
+    def update(
+        self,
+        orders_list=None,
+        positions_list=None,
+        tick=None,
+        *,
+        orders_filtered: bool = False,
+        positions_filtered: bool = False,
+        atr: float | None = None,
+        action_collector: list | None = None,
+    ):
         """核心巡检逻辑：支持双向网格与对标交易所模式"""
+        self._action_collector = action_collector
         if not self.enabled:
             return
             
@@ -854,20 +918,17 @@ class GridStrategy:
         if now < self.pause_until:
             return
 
-        # 获取一次 tick，后续复用
-        if self.lock:
-            with self.lock:
+        # 获取一次 tick，后续复用（Runner 可传入 tick，减少重复的 MT5 调用）
+        if tick is None:
+            if self.lock:
+                with self.lock:
+                    tick = mt5.symbol_info_tick(self.symbol)
+            else:
                 tick = mt5.symbol_info_tick(self.symbol)
-        else:
-            tick = mt5.symbol_info_tick(self.symbol)
             
-        if (not tick) or tick.bid <= 0 or tick.ask <= 0:
+            
+        if not tick or tick.bid <= 0: 
             self.pause_until = now + 5
-            return
-
-        if self.step <= 0:
-            Logger.log(self.symbol, "CRITICAL", f"step<=0 ({self.step})，网格参数非法，已停止策略")
-            self.enabled = False
             return
 
         # 市场活跃度检查 (Proactive Check)
@@ -875,65 +936,54 @@ class GridStrategy:
             return
 
         # 极端点差闸门 (Fuse)
-        if self.max_spread_points is not None and self.point > 0:
+        if self.max_spread_points is not None:
             spread = tick.ask - tick.bid
-            spread_points = spread / self.point
-            if spread_points > self.max_spread_points:
-                Logger.log(self.symbol, "FUSE", f"spread={spread_points:.1f}pt > {self.max_spread_points}pt, mode={self.extreme_mode}, cooldown {self.extreme_cooldown}s")
-
-                # reduce_only: 取消所有挂单，避免极端点差下继续补单；freeze: 仅暂停维护
-                if str(self.extreme_mode).lower() == "reduce_only":
-                    self.clear_old_orders()
-
+            if spread > self.max_spread_points * self.point:
+                Logger.log(self.symbol, "FUSE", f"spread={spread/self.point:>6.1f} > {self.max_spread_points:<6.1f}pt, cooldown {self.extreme_cooldown}s")
                 self.pause_until = now + self.extreme_cooldown
                 return
 
         # --- ATR 自适应步长逻辑 ---
         if self.use_atr:
-            atr = self._calculate_atr()
-            if atr:
-                # 动态调整步长，并对齐到 point
-                new_step = self._normalize_step(atr * self.atr_factor)
-
-                # self.step 可能被热更新/状态恢复为 0，需要保护
-                if self.step <= 0:
+            atr_value = atr if atr is not None else self._calculate_atr()
+            if atr_value:
+                new_step = atr_value * self.atr_factor
+                # ??????
+                min_s = self.base_step * self.min_step_mult
+                max_s = self.base_step * self.max_step_mult
+                new_step = max(min_s, min(max_s, new_step))
+                precision = max(1, int(self.digits))
+                new_step = round(new_step, precision)
+                change_ratio = abs(new_step - self.step) / max(self.step, 1e-9)
+                # ???????????????
+                if change_ratio > self.atr_change_threshold:
                     self.step = new_step
-                else:
-                    # 限制步长变化幅度，避免频繁修改
-                    change_ratio = abs(new_step - self.step) / self.step if self.step > 0 else 1.0
-                    if change_ratio > self.atr_change_threshold:
-                        # 限制步长范围
-                        min_s = self._normalize_step(self.base_step * self.min_step_mult)
-                        max_s = self._normalize_step(self.base_step * self.max_step_mult)
-                        self.step = max(min_s, min(max_s, new_step))
 
-        # 价格基准：使用中间价
         mid_price = (tick.bid + tick.ask) / 2
         
         # 边界检查
-        in_range = (self.min_price <= mid_price <= self.max_price)
-
-        if not in_range:
+        if mid_price < self.min_price or mid_price > self.max_price:
             if self.out_of_range_action == "stop":
                 Logger.log(self.symbol, "STOP", f"mid {mid_price} out of range [{self.min_price}, {self.max_price}]")
                 self.enabled = False
                 self.clear_old_orders()
                 return
             elif self.out_of_range_action == "freeze":
-                # freeze: 不做 TRIM/补单，保留现有挂单与仓位
+                # FIXED: freeze means do nothing (no trim/no add)
+                # Logger.log(self.symbol, "FREEZE", f"mid {mid_price} out of range, skip maintain")
                 return
-            elif self.out_of_range_action == "ignore":
-                pass
             else:
-                # 未知配置，按 freeze 处理更安全
-                Logger.log(self.symbol, "WARN", f"未知 out_of_range_action={self.out_of_range_action}，按 freeze 处理")
-                return
+                # ignore mode
+                pass
 
         # 1. 获取当前属于本实例的挂单和持仓
         if orders_list is not None:
             orders = orders_list
-            # 过滤属于本策略的订单 (增加 symbol 过滤)
-            my_orders = [o for o in orders if o.magic == self.magic and o.symbol == self.symbol]
+            if orders_filtered:
+                my_orders = orders
+            else:
+                # 过滤属于本策略的订单 (增加 symbol 过滤)
+                my_orders = [o for o in orders if o.magic == self.magic and o.symbol == self.symbol]
         else:
             if self.lock:
                 with self.lock:
@@ -945,8 +995,11 @@ class GridStrategy:
         # 1.5 获取持仓
         if positions_list is not None:
             positions = positions_list
-            # 过滤属于本策略的持仓 (增加 symbol 过滤)
-            my_positions = [p for p in positions if p.symbol == self.symbol and p.magic == self.magic]
+            if positions_filtered:
+                my_positions = positions
+            else:
+                # 过滤属于本策略的持仓 (增加 symbol 过滤)
+                my_positions = [p for p in positions if p.symbol == self.symbol and p.magic == self.magic]
         else:
             if self.lock:
                 with self.lock:
@@ -955,18 +1008,30 @@ class GridStrategy:
                 positions = mt5.positions_get(symbol=self.symbol)
             # 增加 magic 过滤
             my_positions = [p for p in positions if p.symbol == self.symbol and p.magic == self.magic] if positions else []
+
+        self._index_orders(my_orders)
             
         # --- 状态播报 (每分钟一次) ---
         if time.time() - self._last_status_log_time > self._status_log_interval:
             float_profit = sum(p.profit for p in my_positions)
             pos_vol = sum(p.volume for p in my_positions)
-            buy_orders = len([o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT])
-            sell_orders = len([o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT])
+            buy_orders = sum(len(v) for v in self.bid_orders.values())
+            sell_orders = sum(len(v) for v in self.ask_orders.values())
             
-            status_msg = (f"价格: {tick.bid:.{self.digits}f}/{tick.ask:.{self.digits}f} | "
-                          f"持仓: {len(my_positions)}单({pos_vol}手, 浮盈{float_profit:.2f}) | "
-                          f"挂单: 买{buy_orders}/卖{sell_orders} | "
-                          f"Step: {self.step}")
+            # 更新统计数据
+            self._update_stats()
+            
+            price_width = 12
+            step_width = 8
+            step_prec = max(1, int(self.digits))
+            status_msg = (
+                f"PRICE {tick.bid:>{price_width}.{self.digits}f}/{tick.ask:>{price_width}.{self.digits}f} | "
+                f"POS {len(my_positions):>2} {pos_vol:>6.2f} PNL {float_profit:>10.2f} | "
+                f"ORD B:{buy_orders:>2} S:{sell_orders:<2} | "
+                f"STEP {self.step:>{step_width}.{step_prec}f} | "
+                f"L+ {self._stats['long_profitable_count']:>3} {self._stats['long_profitable_amount']:>10.2f} | "
+                f"S+ {self._stats['short_profitable_count']:>3} {self._stats['short_profitable_amount']:>10.2f}"
+            )
             Logger.log(self.symbol, "STATUS", status_msg)
             self._last_status_log_time = time.time()
 
@@ -1034,9 +1099,9 @@ class GridStrategy:
                                 self._last_hedge_time = now
                                 self._last_hedge_entry_price = mid
                                 Logger.log(self.symbol, "HEDGE_ADD",
-                                           f"add={vol_to_add:.2f} short={short_vol:.2f}/{hedge_target:.2f} "
-                                           f"net={net_vol:.2f}/{cap:.2f} vol={vol_cur:.3f}>={vol_thr:.3f} "
-                                           f"tv={v_cur:.1f}>={self.hedge_vol_mult}*{v_base:.1f}")
+                                           f"add={vol_to_add:>6.2f} short={short_vol:>6.2f}/{hedge_target:<6.2f} "
+                                           f"net={net_vol:>6.2f}/{cap:<6.2f} vol={vol_cur:>6.3f}>={vol_thr:<6.3f} "
+                                           f"tv={v_cur:>6.1f}>={self.hedge_vol_mult}*{v_base:<6.1f}")
 
             # --- (D) 反弹/回安全区：分段退出一段 ---
             safe_net = cap * (1.0 - self.hedge_fraction)  # 例如 cap=1.5 => 1.0
@@ -1054,7 +1119,7 @@ class GridStrategy:
                     if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                         self._last_hedge_time = now
                         Logger.log(self.symbol, "HEDGE_EXIT",
-                                   f"close={vol_to_close:.2f} net={net_vol:.2f} safe={safe_net:.2f} rebound={rebound}")
+                                   f"close={vol_to_close:>6.2f} net={net_vol:>6.2f} safe={safe_net:<6.2f} rebound={rebound}")
         # ========== END HEDGE MANAGER ==========
 
         # 2. 生成目标网格层级 (围绕 Anchor 固定生成)
@@ -1066,17 +1131,14 @@ class GridStrategy:
         search_range_buy = self.buy_window + self.recenter_steps + 5
         search_range_sell = self.sell_window + self.recenter_steps + 5
 
-        # 只有在价格范围内才补单；ignore 模式下放开边界过滤
-        min_bound = self.min_price if self.out_of_range_action != "ignore" else float("-inf")
-        max_bound = self.max_price if self.out_of_range_action != "ignore" else float("inf")
-
-        if in_range or self.out_of_range_action == "ignore":
+        # 只有在价格范围内才补单 (虽然前面有边界检查，但这里是生成逻辑)
+        if self.min_price <= mid_price <= self.max_price:
             # 生成买单目标 (下方)
             if self.mode in ["neutral", "long"]:
                 # 从 0 开始，围绕 Anchor 向下铺设 (包含 Anchor 本身)
                 for i in range(0, search_range_buy):
                     level = self._normalize_price(self.anchor - (i * self.step))
-                    if level < tick.ask and level >= min_bound:
+                    if level < tick.ask and level >= self.min_price:
                         target_buys.append(level)
                 # 截取窗口大小
                 target_buys = target_buys[:self.buy_window]
@@ -1086,7 +1148,7 @@ class GridStrategy:
                 # 从 0 开始，围绕 Anchor 向上铺设 (包含 Anchor 本身)
                 for i in range(0, search_range_sell):
                     level = self._normalize_price(self.anchor + (i * self.step))
-                    if level > tick.bid and level <= max_bound:
+                    if level > tick.bid and level <= self.max_price:
                         target_sells.append(level)
                 # 截取窗口大小
                 target_sells = target_sells[:self.sell_window]
@@ -1097,16 +1159,14 @@ class GridStrategy:
         
         # A. TRIM (清理多余/超界挂单)
         target_set = set(target_buys + target_sells)
-        trimmed_count = 0
-
         for o in list(my_orders):
             if o.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT):
                 op = self._normalize_price(o.price_open)
                 should_remove = False
-
+                
                 if op not in target_set:
                     should_remove = True
-
+                
                 # 模式过滤
                 if o.type == mt5.ORDER_TYPE_BUY_LIMIT and self.mode == "short":
                     should_remove = True
@@ -1116,35 +1176,24 @@ class GridStrategy:
                 if should_remove:
                     if self.lock:
                         with self.lock:
-                            mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                            self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                     else:
-                        mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
-                    trimmed_count += 1
+                        self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                     # Logger.log(self.symbol, "TRIM", f"撤单: {op}")
-
-        # TRIM 后刷新挂单集合，避免本轮继续使用旧 my_orders 造成漏补/风控偏差
-        if trimmed_count > 0:
-            if self.lock:
-                with self.lock:
-                    orders = mt5.orders_get(symbol=self.symbol)
-            else:
-                orders = mt5.orders_get(symbol=self.symbol)
-
-            my_orders = [o for o in (orders or []) if o.magic == self.magic and o.symbol == self.symbol]
 
         # B. 补单 (带库存风控)
         
         # 统计库存
         long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(my_positions, my_orders)
 
-        long_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_BUY)
-        short_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_SELL)
-        pending_buy_count = sum(1 for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT)
-        pending_sell_count = sum(1 for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT)
-
-        existing_buy_prices = {self._normalize_price(o.price_open) for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT}
-        existing_sell_prices = {self._normalize_price(o.price_open) for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT}
+        existing_buy_prices = set(self.bid_orders.keys())
+        existing_sell_prices = set(self.ask_orders.keys())
         existing_positions_prices = {self._normalize_price(p.price_open) for p in my_positions}
+        # 将持仓价格映射为网格索引：避免每个目标价都 O(n) 扫描持仓
+        pos_k_set = set()
+        if self.step > 0 and self.anchor is not None:
+            pos_k_set = {round((p_price - self.anchor) / self.step) for p_price in existing_positions_prices}
+
 
         min_dist = max(self.stop_level, self.point * 10) # 最小挂单距离
         placed_count = 0
@@ -1155,30 +1204,28 @@ class GridStrategy:
             if price in existing_buy_prices: continue
             if abs(price - tick.ask) < min_dist: continue
             
-            # 检查持仓重叠 (简单去重)
-            is_duplicate_pos = False
-            for p_price in existing_positions_prices:
-                if abs(p_price - price) < (self.step * 0.1):
-                    is_duplicate_pos = True
-                    break
-            if is_duplicate_pos: continue
-
-            # 风控检查：仓位数/手数上限 + 净暴露
-            if self.max_long_pos is not None and (long_pos_count + pending_buy_count) >= int(self.max_long_pos):
-                break
+            # 检查持仓重叠：优先用网格索引集合做 O(1) 去重
+            if pos_k_set:
+                k = round((price - self.anchor) / self.step)
+                if k in pos_k_set:
+                    continue
+            else:
+                # step=0 或 anchor 未初始化时兜底：退化为 O(n) 扫描
+                is_duplicate_pos = False
+                for p_price in existing_positions_prices:
+                    if abs(p_price - price) < (self.step * 0.1):
+                        is_duplicate_pos = True
+                        break
+                if is_duplicate_pos:
+                    continue
 
             if not self._allow_side("buy", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol):
                 break
 
             if self._place_buy_order(price):
                 placed_count += 1
-
-                # 循环内即时更新本地库存，避免同一轮穿透风控
-                pending_buy_vol += self.lot
-                pending_buy_count += 1
+                # 本地更新 net_vol 以便循环内即时生效
                 net_vol += self.lot
-
-                existing_buy_prices.add(price)
 
         # 补卖单
         for price in target_sells:
@@ -1186,25 +1233,23 @@ class GridStrategy:
             if price in existing_sell_prices: continue
             if abs(price - tick.bid) < min_dist: continue
 
-            is_duplicate_pos = False
-            for p_price in existing_positions_prices:
-                if abs(p_price - price) < (self.step * 0.1):
-                    is_duplicate_pos = True
-                    break
-            if is_duplicate_pos: continue
-
-            # 风控检查：仓位数/手数上限 + 净暴露
-            if self.max_short_pos is not None and (short_pos_count + pending_sell_count) >= int(self.max_short_pos):
-                break
+            # 检查持仓重叠：优先用网格索引集合做 O(1) 去重
+            if pos_k_set:
+                k = round((price - self.anchor) / self.step)
+                if k in pos_k_set:
+                    continue
+            else:
+                is_duplicate_pos = False
+                for p_price in existing_positions_prices:
+                    if abs(p_price - price) < (self.step * 0.1):
+                        is_duplicate_pos = True
+                        break
+                if is_duplicate_pos:
+                    continue
 
             if not self._allow_side("sell", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol):
                 break
 
             if self._place_sell_order(price):
                 placed_count += 1
-
-                pending_sell_vol += self.lot
-                pending_sell_count += 1
                 net_vol -= self.lot
-
-                existing_sell_prices.add(price)

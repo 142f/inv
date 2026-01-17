@@ -7,15 +7,15 @@ from core.strategy_lib import GridStrategy
 
 
 class StrategyUpdater:
-    def __init__(self, mt5_client):
-        self.mt5_client = mt5_client
+    def __init__(self, broker):
+        self.broker = broker
 
     def apply(self, strategy: GridStrategy, cfg: dict):
         current_state = strategy.get_state()
 
         new_symbol = cfg.get("symbol", strategy.symbol)
         if strategy.symbol != new_symbol:
-            self.mt5_client.ensure_symbol(new_symbol)
+            self.broker.ensure_symbol(new_symbol)
             strategy.set_symbol(new_symbol, reset_runtime_state=True)
             current_state = {}
             Logger.log("SYSTEM", "UPDATE", f"Strategy {strategy.magic} symbol -> {strategy.symbol}")
