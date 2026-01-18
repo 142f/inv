@@ -1050,11 +1050,16 @@ class GridStrategy:
             price_width = 12
             step_width = 8
             step_prec = max(1, int(self.digits))
+            if self.use_atr and self.base_step:
+                step_ratio = self.step / self.base_step
+                atr_note = f" | STEPx {step_ratio:.2f}"
+            else:
+                atr_note = ""
             status_msg = (
                 f"PRICE {tick.bid:>{price_width}.{self.digits}f}/{tick.ask:>{price_width}.{self.digits}f} | "
                 f"POS {len(my_positions):>2} {pos_vol:>6.2f} PNL {float_profit:>10.2f} | "
                 f"ORD B:{buy_orders:>2} S:{sell_orders:<2} | "
-                f"STEP {self.step:>{step_width}.{step_prec}f} | "
+                f"STEP {self.step:>{step_width}.{step_prec}f}{atr_note} | "
                 f"L+ {self._stats['long_profitable_count']:>3} {self._stats['long_profitable_amount']:>10.2f} | "
                 f"S+ {self._stats['short_profitable_count']:>3} {self._stats['short_profitable_amount']:>10.2f}"
             )

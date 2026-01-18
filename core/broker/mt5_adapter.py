@@ -1,4 +1,4 @@
-"""MT5 broker adapter."""
+﻿"""MT5 broker adapter."""
 
 from __future__ import annotations
 
@@ -56,34 +56,34 @@ class MT5Broker(BrokerBase):
             if current_account_info:
                 mode_str = "Unknown"
                 if current_account_info.margin_mode == mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:
-                    mode_str = "HEDGING (å¯¹å†²æ¨¡å¼)"
+                    mode_str = "HEDGING (对冲模式)"
                 elif current_account_info.margin_mode == mt5.ACCOUNT_MARGIN_MODE_RETAIL_NETTING:
-                    mode_str = "NETTING (å‡€é¢æ¨¡å¼?)"
+                    mode_str = "NETTING (净额模式)"
                 else:
                     mode_str = f"Mode {current_account_info.margin_mode}"
-                Logger.log("SYSTEM", "INFO", f"è´¦æˆ·æ¨¡å¼: {mode_str}")
+                Logger.log("SYSTEM", "INFO", f"账户模式: {mode_str}")
                 if current_account_info.margin_mode == mt5.ACCOUNT_MARGIN_MODE_RETAIL_NETTING:
                     Logger.log(
                         "SYSTEM",
                         "WARN",
-                        "æ³¨æ„: å½“å‰ç­–ç•¥ä¸?HEDGING è®¾è®¡ï¼Œåœ¨ NETTING æ¨¡å¼ä¸‹å¯èƒ½æ— æ³•æ­£ç¡®ç®¡ç†å¤šå±‚ç½‘æ ¼æŒä»“ã€‚",
+                        "注意: 当前策略非 HEDGING 设计，在 NETTING 模式下可能无法正确管理多层网格持仓。",
                     )
 
             if acc_id != 0 and current_account_info and current_account_info.login == acc_id:
                 Logger.log(
                     "SYSTEM",
                     "INFO",
-                    f"æ£€æµ‹åˆ°ç»ˆç«¯å·²ç™»å½•è´¦å· {acc_id}ï¼Œè·³è¿‡é‡å¤ç™»å½•",
+                    f"检测到终端已登录账号 {acc_id}，跳过重复登录",
                 )
                 return True
 
             if acc_id != 0:
-                Logger.log("SYSTEM", "INFO", f"æ­£åœ¨å°è¯•ç™»å½•è´¦å· {acc_id}...")
+                Logger.log("SYSTEM", "INFO", f"正在尝试登录账号 {acc_id}...")
                 if not mt5.login(acc_id, password=pwd, server=srv):
                     Logger.log(
                         "SYSTEM",
                         "ERROR",
-                        f"Login Failed: {mt5.last_error()} (è¯·æ£€æŸ¥.env ä¸­çš„è´¦å·/å¯†ç /æœåŠ¡å™¨)",
+                        f"Login Failed: {mt5.last_error()} (请检查.env 中的账号/密码/服务器)",
                     )
                     return False
             else:
@@ -91,10 +91,10 @@ class MT5Broker(BrokerBase):
                     Logger.log(
                         "SYSTEM",
                         "WARN",
-                        f"æœªé…ç½®æŒ‡å®šè´¦å·ï¼Œä½¿ç”¨å½“å‰ç»ˆç«¯è´¦å·: {current_account_info.login}",
+                        f"未配置指定账号，使用当前终端账号: {current_account_info.login}",
                     )
                 else:
-                    Logger.log("SYSTEM", "ERROR", "æœªé…ç½®è´¦å·ä¸”å½“å‰ç»ˆç«¯æœªç™»å½•")
+                    Logger.log("SYSTEM", "ERROR", "未配置账号且当前终端未登录")
                     return False
 
         return True
@@ -104,7 +104,7 @@ class MT5Broker(BrokerBase):
             if mt5.terminal_info() is not None:
                 mt5.shutdown()
                 mt5.shutdown()
-        Logger.log("SYSTEM", "SHUTDOWN", "MT5è¿žæŽ¥å·²å…³é—­")
+        Logger.log("SYSTEM", "SHUTDOWN", "MT5连接已关闭")
 
     def ensure_symbol(self, symbol: str) -> None:
         with self._lock:

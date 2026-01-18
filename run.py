@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import os
 from core.logger import Logger
 from core.broker.mt5_adapter import MT5Broker

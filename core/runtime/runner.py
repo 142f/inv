@@ -1,4 +1,4 @@
-import time
+﻿import time
 from collections import defaultdict
 
 import MetaTrader5 as mt5
@@ -60,7 +60,7 @@ class Runner:
 
                 if acc.margin_level > 0 and acc.margin_level < 200:
                     if not halted:
-                        Logger.log("SYSTEM", "HALT", f"保证金过低 ({acc.margin_level:>6.2f}%)，暂停运行")
+                        Logger.log("SYSTEM", "HALT", f"保证金过低({acc.margin_level:>6.2f}%)，暂停运行")
                         halted = True
                     time.sleep(max(2.0, interval))
                     continue
@@ -150,3 +150,4 @@ class Runner:
                     Logger.log(strategy.symbol, "ERROR", f"策略执行异常: {exc}")
 
             time.sleep(interval)
+

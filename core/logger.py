@@ -1,4 +1,4 @@
-import atexit
+﻿import atexit
 import logging
 import os
 import queue
@@ -219,3 +219,4 @@ class Logger:
         record.console_msg = console_msg
         record.created = time.time()
         Logger._logger.handle(record)
+
