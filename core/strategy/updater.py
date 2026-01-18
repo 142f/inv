@@ -5,12 +5,15 @@ from __future__ import annotations
 from core.logger import Logger
 from core.strategy_lib import GridStrategy
 
+from .config import normalize_config
+
 
 class StrategyUpdater:
     def __init__(self, broker):
         self.broker = broker
 
     def apply(self, strategy: GridStrategy, cfg: dict):
+        cfg = normalize_config(cfg)
         current_state = strategy.get_state()
 
         new_symbol = cfg.get("symbol", strategy.symbol)
@@ -21,9 +24,9 @@ class StrategyUpdater:
             Logger.log("SYSTEM", "UPDATE", f"Strategy {strategy.magic} symbol -> {strategy.symbol}")
 
         if "enabled" in cfg:
-            strategy.enabled = cfg["enabled"]
+            strategy.enabled = bool(cfg["enabled"])
 
-        if "step" in cfg:
+        if "step" in cfg and cfg.get("step") is not None:
             new_step = float(cfg["step"])
             if new_step != strategy.step:
                 strategy.step = new_step
@@ -34,24 +37,24 @@ class StrategyUpdater:
                 setattr(strategy, key, cfg[key])
 
         window_changed = False
-        if "window" in cfg:
+        if "window" in cfg and cfg.get("window") is not None:
             new_window = int(cfg["window"])
             if new_window != strategy.window:
                 strategy.window = new_window
                 window_changed = True
 
-        if "min_p" in cfg:
+        if "min_p" in cfg and cfg.get("min_p") is not None:
             strategy.min_price = cfg["min_p"]
-        if "max_p" in cfg:
+        if "max_p" in cfg and cfg.get("max_p") is not None:
             strategy.max_price = cfg["max_p"]
 
-        if "buy_window" in cfg:
+        if "buy_window" in cfg and cfg.get("buy_window") is not None:
             bw = cfg.get("buy_window")
             strategy.buy_window = int(bw) if bw is not None else strategy.window
         elif window_changed:
             strategy.buy_window = strategy.window
 
-        if "sell_window" in cfg:
+        if "sell_window" in cfg and cfg.get("sell_window") is not None:
             sw = cfg.get("sell_window")
             strategy.sell_window = int(sw) if sw is not None else strategy.window
         elif window_changed:

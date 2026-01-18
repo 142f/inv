@@ -1,7 +1,12 @@
-import yaml
+"""Strategy configuration loader and validator."""
+
+from __future__ import annotations
+
 from pathlib import Path
 from typing import List, Tuple
-from __init__ import PROJECT_ROOT
+
+import yaml
+
 from core.logger import Logger
 
 
@@ -13,7 +18,9 @@ class ConfigLoader:
     REQUIRED_FIELDS = ["symbol", "step", "tp_dist", "lot", "magic"]
 
     def __init__(self, config_path: Path | None = None):
-        self.config_path = Path(config_path) if config_path else PROJECT_ROOT / "config" / "strategies.yaml"
+        project_root = Path(__file__).resolve().parents[2]
+        default_path = project_root / "config" / "strategies.yaml"
+        self.config_path = Path(config_path) if config_path else default_path
         self.last_mtime = 0.0
 
     def load_if_changed(self) -> Tuple[bool, List[dict]]:
@@ -21,7 +28,7 @@ class ConfigLoader:
         try:
             current_mtime = self.config_path.stat().st_mtime
         except FileNotFoundError:
-            Logger.log("SYSTEM", "WARN", f"配置文件不存在: {self.config_path}")
+            Logger.log("SYSTEM", "WARN", f"Config file not found: {self.config_path}")
             return False, []
 
         if current_mtime <= self.last_mtime:
@@ -44,11 +51,11 @@ class ConfigLoader:
             with open(self.config_path, "r", encoding="utf-8") as fh:
                 data = yaml.safe_load(fh) or []
         except Exception as exc:
-            Logger.log("SYSTEM", "ERROR", f"读取配置失败: {exc}")
+            Logger.log("SYSTEM", "ERROR", f"Failed to read config: {exc}")
             return []
 
         if not isinstance(data, list):
-            Logger.log("SYSTEM", "ERROR", "配置文件格式错误：根节点必须是列表")
+            Logger.log("SYSTEM", "ERROR", "Config file root must be a list.")
             return []
 
         return self._validate_all(data)
@@ -62,22 +69,22 @@ class ConfigLoader:
                 self._validate_single(cfg, seen_magic)
                 validated.append(cfg)
             except ConfigValidationError as exc:
-                Logger.log("SYSTEM", "CONFIG_ERROR", f"配置第 {idx + 1} 条无效: {exc}")
+                Logger.log("SYSTEM", "CONFIG_ERROR", f"Config #{idx + 1} invalid: {exc}")
                 continue
 
         return validated
 
     def _validate_single(self, cfg: dict, seen_magic: set[int]):
         if not isinstance(cfg, dict):
-            raise ConfigValidationError("配置项必须是映射对象")
+            raise ConfigValidationError("Config entry must be a mapping.")
 
         missing = [f for f in self.REQUIRED_FIELDS if f not in cfg]
         if missing:
-            raise ConfigValidationError(f"缺少必填字段: {', '.join(missing)}")
+            raise ConfigValidationError(f"Missing required fields: {', '.join(missing)}")
 
         magic = cfg.get("magic")
         if magic in seen_magic:
-            raise ConfigValidationError(f"重复 magic: {magic}")
+            raise ConfigValidationError(f"Duplicate magic: {magic}")
         seen_magic.add(magic)
 
         self._ensure_positive(cfg, "step")
@@ -88,14 +95,14 @@ class ConfigLoader:
         min_p = float(cfg.get("min_p", 0))
         max_p = float(cfg.get("max_p", 0))
         if min_p >= max_p:
-            raise ConfigValidationError(f"min_p({min_p}) 必须小于 max_p({max_p})")
+            raise ConfigValidationError(f"min_p({min_p}) must be less than max_p({max_p})")
 
     def _ensure_positive(self, cfg: dict, key: str, allow_zero: bool = False):
         if key not in cfg:
-            raise ConfigValidationError(f"缺少字段 {key}")
+            raise ConfigValidationError(f"Missing field {key}")
         try:
             value = float(cfg[key])
         except Exception:
-            raise ConfigValidationError(f"字段 {key} 不是数值")
+            raise ConfigValidationError(f"Field {key} is not numeric")
         if value < 0 or (not allow_zero and value <= 0):
-            raise ConfigValidationError(f"字段 {key} 必须大于 0")
+            raise ConfigValidationError(f"Field {key} must be greater than 0")
