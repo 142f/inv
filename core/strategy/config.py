@@ -8,7 +8,7 @@ from typing import Any, Dict
 _BOOL_KEYS = {
     "enabled",
     "use_atr",
-    "use_atr_tp",
+    "adaptive_enabled",
     "hedge_enabled",
 }
 
@@ -30,6 +30,7 @@ _INT_KEYS = {
     "hedge_vol_base",
     "be_trigger_steps",
     "be_buffer_points",
+    "adaptive_lookback",
 }
 
 _FLOAT_KEYS = {
@@ -39,12 +40,18 @@ _FLOAT_KEYS = {
     "min_p",
     "max_p",
     "atr_factor",
-    "atr_tp_factor",
     "atr_update_seconds",
     "atr_smooth",
     "atr_change_threshold",
     "min_step_mult",
     "max_step_mult",
+    "adaptive_quantile_low",
+    "adaptive_quantile_high",
+    "adaptive_step_mult_low",
+    "adaptive_step_mult_high",
+    "adaptive_lot_min_mult",
+    "adaptive_lot_max_mult",
+    "adaptive_range_buffer_atr",
     "recenter_cooldown",
     "max_long_vol",
     "max_short_vol",

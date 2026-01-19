@@ -15,7 +15,11 @@ class GridStrategy:
     def __init__(self, symbol, step, tp_dist, lot, magic, 
                  window=6, min_p=0, max_p=999999, enabled=True, 
                  use_atr=False, atr_period=14, atr_factor=1.0, atr_mode="wilder", atr_timeframe="M15",
-                 use_atr_tp=False, atr_tp_factor=1.0,
+                 adaptive_enabled=False, adaptive_timeframe="M15", adaptive_lookback=200,
+                 adaptive_quantile_low=0.30, adaptive_quantile_high=0.70,
+                 adaptive_step_mult_low=0.90, adaptive_step_mult_high=1.10,
+                 adaptive_lot_min_mult=0.50, adaptive_lot_max_mult=1.50,
+                 adaptive_range_buffer_atr=1.0,
                  mode="neutral", buy_window=None, sell_window=None, 
                  out_of_range_action="freeze", 
                  atr_update_seconds=5, atr_smooth=0.1, atr_change_threshold=0.01,
@@ -61,8 +65,6 @@ class GridStrategy:
         :param atr_factor: ATR 乘数 (Step = ATR * factor)
         :param atr_mode: ATR 模式: "wilder" | "ema" | "sma"
         :param atr_timeframe: ATR 时间周期 (例如 "M15", "H1")
-        :param use_atr_tp: 是否启用 ATR 动态止盈
-        :param atr_tp_factor: ATR 止盈系数 (TP = ATR * factor)
         :param mode: "neutral" | "long" | "short"
         :param buy_window: 买单窗口大小 (默认等于 window)
         :param sell_window: 卖单窗口大小 (默认等于 window)
@@ -73,6 +75,7 @@ class GridStrategy:
         self.step = float(step)
         self.base_tp_dist = float(tp_dist)
         self.tp_dist = float(tp_dist)
+        self.base_lot = float(lot)
         self.lot = float(lot)
         self.magic = int(magic)
         self.window = int(window)
@@ -85,8 +88,16 @@ class GridStrategy:
         self.atr_factor = atr_factor
         self.atr_mode = atr_mode
         self.atr_timeframe = atr_timeframe
-        self.use_atr_tp = use_atr_tp
-        self.atr_tp_factor = atr_tp_factor
+        self.adaptive_enabled = adaptive_enabled
+        self.adaptive_timeframe = adaptive_timeframe
+        self.adaptive_lookback = int(adaptive_lookback)
+        self.adaptive_quantile_low = float(adaptive_quantile_low)
+        self.adaptive_quantile_high = float(adaptive_quantile_high)
+        self.adaptive_step_mult_low = float(adaptive_step_mult_low)
+        self.adaptive_step_mult_high = float(adaptive_step_mult_high)
+        self.adaptive_lot_min_mult = float(adaptive_lot_min_mult)
+        self.adaptive_lot_max_mult = float(adaptive_lot_max_mult)
+        self.adaptive_range_buffer_atr = float(adaptive_range_buffer_atr)
         
         # 新增参数
         self.mode = mode
@@ -155,6 +166,7 @@ class GridStrategy:
         self._last_atr_value = None
         self._last_atr_time = 0
         self._last_tick_time = 0
+        self._last_adapt_bar_time = 0
         
         # 日志相关
         self._last_status_log_time = 0
@@ -405,23 +417,132 @@ class GridStrategy:
         }
         return mapping.get(timeframe, mt5.TIMEFRAME_M15)
 
+    def _resolve_adaptive_timeframe(self):
+        timeframe = str(self.adaptive_timeframe or self.atr_timeframe or "M15").upper()
+        mapping = {
+            "M1": mt5.TIMEFRAME_M1,
+            "M5": mt5.TIMEFRAME_M5,
+            "M15": mt5.TIMEFRAME_M15,
+            "M30": mt5.TIMEFRAME_M30,
+            "H1": mt5.TIMEFRAME_H1,
+            "H4": mt5.TIMEFRAME_H4,
+            "D1": mt5.TIMEFRAME_D1,
+        }
+        return mapping.get(timeframe, mt5.TIMEFRAME_M15)
+
+    def _calculate_atr_series(self, tr, period: int, mode: str) -> np.ndarray:
+        period = max(1, int(period))
+        if len(tr) < period:
+            return np.array([], dtype=float)
+        mode = str(mode or "wilder").lower()
+        if mode == "sma":
+            atr = np.convolve(tr, np.ones(period), "valid") / period
+            return atr
+
+        alpha = 1.0 / period if mode == "wilder" else 2.0 / (period + 1.0)
+        atr_values = []
+        current_atr = float(np.mean(tr[:period]))
+        atr_values.append(current_atr)
+        for i in range(period, len(tr)):
+            current_atr = (current_atr * (1.0 - alpha)) + (tr[i] * alpha)
+            atr_values.append(current_atr)
+        return np.array(atr_values, dtype=float)
+
+    def _maybe_adapt_params(self):
+        if not self.adaptive_enabled or not self.use_atr:
+            return
+
+        lookback = max(50, int(self.adaptive_lookback))
+        timeframe = self._resolve_adaptive_timeframe()
+
+        if self.lock:
+            with self.lock:
+                rates = mt5.copy_rates_from_pos(self.symbol, timeframe, 0, lookback + 2)
+        else:
+            rates = mt5.copy_rates_from_pos(self.symbol, timeframe, 0, lookback + 2)
+
+        if rates is None or len(rates) < 10:
+            return
+
+        last_closed_time = int(rates[-2]["time"])
+        if last_closed_time == self._last_adapt_bar_time:
+            return
+        self._last_adapt_bar_time = last_closed_time
+
+        # Drop the last incomplete bar.
+        rates = rates[:-1]
+        highs = rates["high"][1:]
+        lows = rates["low"][1:]
+        close_prev = rates["close"][:-1]
+        tr = np.maximum(highs - lows, np.maximum(abs(highs - close_prev), abs(lows - close_prev)))
+        atr_series = self._calculate_atr_series(tr, self.atr_period, self.atr_mode)
+        if atr_series.size == 0:
+            return
+
+        atr_current = float(atr_series[-1])
+        q_low = float(np.quantile(atr_series, self.adaptive_quantile_low))
+        q_high = float(np.quantile(atr_series, self.adaptive_quantile_high))
+
+        # Step/tp scaling by volatility regime.
+        step_mult = 1.0
+        if atr_current <= q_low:
+            step_mult = self.adaptive_step_mult_low
+        elif atr_current >= q_high:
+            step_mult = self.adaptive_step_mult_high
+
+        new_step = atr_current * self.atr_factor * step_mult
+        min_s = self.base_step * self.min_step_mult
+        max_s = self.base_step * self.max_step_mult
+        new_step = max(min_s, min(max_s, new_step))
+        precision = max(1, int(self.digits))
+        new_step = round(new_step, precision)
+        if abs(new_step - self.step) / max(self.step, 1e-9) > self.atr_change_threshold:
+            self.step = new_step
+
+        new_tp = atr_current * self.atr_factor * step_mult
+        min_tp = self.base_tp_dist * self.min_step_mult
+        max_tp = self.base_tp_dist * self.max_step_mult
+        new_tp = max(min_tp, min(max_tp, new_tp))
+        new_tp = round(new_tp, precision)
+        if abs(new_tp - self.tp_dist) / max(self.tp_dist, 1e-9) > self.atr_change_threshold:
+            self.tp_dist = new_tp
+
+        # Lot scaling inversely to ATR, with caps.
+        atr_median = float(np.median(atr_series))
+        if atr_current > 0 and self.base_lot > 0:
+            lot_mult = atr_median / atr_current
+            lot_mult = max(self.adaptive_lot_min_mult, min(self.adaptive_lot_max_mult, lot_mult))
+            self.lot = max(0.0, self.base_lot * lot_mult)
+
+        # Range update based on recent high/low + ATR buffer.
+        buffer = atr_current * self.adaptive_range_buffer_atr
+        self.min_price = float(np.min(rates["low"])) - buffer
+        self.max_price = float(np.max(rates["high"])) + buffer
+
     def _calculate_atr(self):
-        """?? ATR (Wilder/EMA/SMA) - ????? + ?? + ??"""
+        """Standard ATR calculation based on history to avoid intra-bar recursion errors."""
         current_time = time.time()
         if current_time - self._last_atr_time < self.atr_update_seconds:
             return self._last_atr_value
 
-        # ???????: period + 1 ?K?
+        # Determine lookback length
+        # We need enough history for EMA/Wilder to converge from a simple SMA seed.
+        # 5x period is usually sufficient (weight of seed < 1%).
+        lookback = max(self.atr_period * 5, 100)
+
         if self.lock:
             with self.lock:
-                rates = mt5.copy_rates_from_pos(self.symbol, self._resolve_timeframe(), 0, self.atr_period + 1)
+                rates = mt5.copy_rates_from_pos(self.symbol, self._resolve_timeframe(), 0, lookback + 1)
         else:
-            rates = mt5.copy_rates_from_pos(self.symbol, self._resolve_timeframe(), 0, self.atr_period + 1)
+            rates = mt5.copy_rates_from_pos(self.symbol, self._resolve_timeframe(), 0, lookback + 1)
 
-        if rates is None or len(rates) < self.atr_period + 1:
+        # Check data sufficiency
+        if rates is None or len(rates) < self.atr_period + 2:
             return self._last_atr_value
 
-        # ?? numpy ?????(mt5 ???? numpy ?????)
+        # Calculate True Range (TR) using completed bars only.
+        # rates are in chronological order; drop the last (incomplete) bar.
+        rates = rates[:-1]
         high = rates["high"][1:]
         low = rates["low"][1:]
         close_prev = rates["close"][:-1]
@@ -429,30 +550,41 @@ class GridStrategy:
         tr = np.maximum(high - low, np.abs(high - close_prev))
         tr = np.maximum(tr, np.abs(low - close_prev))
 
-        mode = str(self.atr_mode or "wilder").lower()
-        if mode == "sma":
-            raw_atr = float(np.mean(tr))
-        else:
-            last_tr = float(tr[-1])
-            if self._last_atr_value is None:
-                raw_atr = float(np.mean(tr))
-            elif mode == "ema":
-                alpha = 2.0 / (self.atr_period + 1.0)
-                raw_atr = (self._last_atr_value * (1 - alpha)) + (last_tr * alpha)
-            else:
-                # Wilder's smoothing (default)
-                raw_atr = (self._last_atr_value * (self.atr_period - 1) + last_tr) / self.atr_period
+        # We need at least 'period' data points
+        if len(tr) < self.atr_period:
+            return self._last_atr_value
 
-        # ?????????
-        if self.atr_smooth:
-            if self._last_atr_value is None:
-                self._last_atr_value = raw_atr
+        mode = str(self.atr_mode or "wilder").lower()
+        raw_atr = 0.0
+
+        if mode == "sma":
+            # SMA is just the mean of the last N TRs
+            raw_atr = float(np.mean(tr[-self.atr_period:]))
+        else:
+            # Wilder (alpha=1/N) or EMA (alpha=2/(N+1))
+            # 1. Initialize with SMA of the first 'period' elements
+            # Note: We slice from the beginning of our lookback window, not end.
+            current_atr = np.mean(tr[:self.atr_period])
+            
+            alpha = 1.0 / self.atr_period if mode == "wilder" else 2.0 / (self.atr_period + 1.0)
+            
+            # 2. Apply smoothing recursively over the rest of the history
+            # Using a loop is cleaner than implementing lfilter/vectorization for this specific case
+            for i in range(self.atr_period, len(tr)):
+                current_atr = (current_atr * (1.0 - alpha)) + (tr[i] * alpha)
+            
+            raw_atr = current_atr
+
+        # Apply optional output smoothing (Low-pass filter on the output only)
+        # This keeps the signal stable without corrupting the indicator logic
+        if self._last_atr_value is None:
+            self._last_atr_value = raw_atr
+        elif self.atr_smooth:
+            s = float(self.atr_smooth)
+            if 0 < s < 1:
+                self._last_atr_value = (self._last_atr_value * (1 - s)) + (raw_atr * s)
             else:
-                smooth = float(self.atr_smooth)
-                if 0 < smooth < 1:
-                    self._last_atr_value = (self._last_atr_value * (1 - smooth)) + (raw_atr * smooth)
-                else:
-                    self._last_atr_value = raw_atr
+                self._last_atr_value = raw_atr
         else:
             self._last_atr_value = raw_atr
 
@@ -507,6 +639,9 @@ class GridStrategy:
             price = self._normalize_price(price)
             tp = self._normalize_price(price + self.tp_dist)
             vol = self._normalize_volume(self.lot)
+            atr_coef = 1.0
+            if self.use_atr and self.base_step:
+                atr_coef = self.step / self.base_step
             filling_mode = self.filling_mode
             if filling_mode not in (
                 mt5.ORDER_FILLING_FOK,
@@ -534,7 +669,7 @@ class GridStrategy:
                 Logger.log(
                     self.symbol,
                     "ORDER_SENT",
-                    f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} (queued)",
+                    f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (queued)",
                 )
                 return True
             
@@ -578,13 +713,21 @@ class GridStrategy:
                             return None
                             
                         if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                            Logger.log(self.symbol, "ORDER_SENT", f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} (重试)")
+                            Logger.log(
+                                self.symbol,
+                                "ORDER_SENT",
+                                f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (重试)",
+                            )
                             return result.order
 
                 self._handle_order_error(result.retcode, result.comment, price)
                 return None
                 
-            Logger.log(self.symbol, "ORDER_SENT", f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic}")
+            Logger.log(
+                self.symbol,
+                "ORDER_SENT",
+                f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f}",
+            )
             return result.order
             
         except Exception as e:
@@ -600,6 +743,9 @@ class GridStrategy:
             price = self._normalize_price(price)
             tp = self._normalize_price(price - self.tp_dist)
             vol = self._normalize_volume(self.lot)
+            atr_coef = 1.0
+            if self.use_atr and self.base_step:
+                atr_coef = self.step / self.base_step
             filling_mode = self.filling_mode
             if filling_mode not in (
                 mt5.ORDER_FILLING_FOK,
@@ -627,7 +773,7 @@ class GridStrategy:
                 Logger.log(
                     self.symbol,
                     "ORDER_SENT",
-                    f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} (queued)",
+                    f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (queued)",
                 )
                 return True
             
@@ -666,13 +812,21 @@ class GridStrategy:
                         return None
                         
                     if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                            Logger.log(self.symbol, "ORDER_SENT", f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} (重试)")
+                            Logger.log(
+                                self.symbol,
+                                "ORDER_SENT",
+                                f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (重试)",
+                            )
                             return result.order
 
                 self._handle_order_error(result.retcode, result.comment, price)
                 return None
                 
-            Logger.log(self.symbol, "ORDER_SENT", f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic}")
+            Logger.log(
+                self.symbol,
+                "ORDER_SENT",
+                f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f}",
+            )
             return result.order
             
         except Exception as e:
@@ -991,12 +1145,14 @@ class GridStrategy:
             self.pause_until = spread_check.pause_until
             return
 
+        self._maybe_adapt_params()
+
         # --- ATR adaptive step/tp ---
         atr_value = None
-        if self.use_atr or self.use_atr_tp:
+        if self.use_atr and not self.adaptive_enabled:
             atr_value = atr if atr is not None else self._calculate_atr()
 
-        if self.use_atr and atr_value:
+        if self.use_atr and not self.adaptive_enabled and atr_value:
             new_step = atr_value * self.atr_factor
             min_s = self.base_step * self.min_step_mult
             max_s = self.base_step * self.max_step_mult
@@ -1007,8 +1163,7 @@ class GridStrategy:
             if change_ratio > self.atr_change_threshold:
                 self.step = new_step
 
-        if self.use_atr_tp and atr_value:
-            new_tp = atr_value * self.atr_tp_factor
+            new_tp = atr_value * self.atr_factor
             min_tp = self.base_tp_dist * self.min_step_mult
             max_tp = self.base_tp_dist * self.max_step_mult
             new_tp = max(min_tp, min(max_tp, new_tp))
@@ -1085,16 +1240,14 @@ class GridStrategy:
             price_width = 12
             step_width = 8
             step_prec = max(1, int(self.digits))
+            atr_coef = 1.0
             if self.use_atr and self.base_step:
-                step_ratio = self.step / self.base_step
-                atr_note = f" | STEPx {step_ratio:.2f}"
-            else:
-                atr_note = ""
+                atr_coef = self.step / self.base_step
             status_msg = (
                 f"PRICE {tick.bid:>{price_width}.{self.digits}f}/{tick.ask:>{price_width}.{self.digits}f} | "
                 f"POS {len(my_positions):>2} {pos_vol:>6.2f} PNL {float_profit:>10.2f} | "
                 f"ORD B:{buy_orders:>2} S:{sell_orders:<2} | "
-                f"STEP {self.step:>{step_width}.{step_prec}f}{atr_note} | "
+                f"STEP {self.step:>{step_width}.{step_prec}f} | ATRx {atr_coef:>4.2f} | "
                 f"L+ {self._stats['long_profitable_count']:>3} {self._stats['long_profitable_amount']:>10.2f} | "
                 f"S+ {self._stats['short_profitable_count']:>3} {self._stats['short_profitable_amount']:>10.2f}"
             )
