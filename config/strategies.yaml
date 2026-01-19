@@ -2,20 +2,22 @@
 # 修改此文件后，系统会自动热加载，无需重启
 - symbol: "USDJPYc"                  # 美日
   magic: 1002                         # 策略唯一ID
-  lot: 0.02                           # 交易手数
-  step: 0.10                          # 网格间距
-  tp_dist: 0.14                       # 止盈距离
+  lot: 0.08                         # 交易手数
+  step: 0.05                      # 网格间距
+  tp_dist: 0.06                 # 止盈距离
   window: 3                           # 盘口挂单数量 (单边)
-  min_p: 100                          # 最小交易价格
-  max_p: 200                          # 最大交易价格
+  min_p: 150                          # 最小交易价格
+  max_p: 170                          # 最大交易价格
   enabled: true                       # 是否启用
   mode: neutral                          # 仅做多
-  use_atr: false                      # 是否使用 ATR 动态步长
+  use_atr: true                      # 是否使用 ATR 动态步长
   atr_period: 14                      # ATR 周期
   atr_factor: 1.0                     # ATR 系数
+  use_atr_tp: true                  # ATR-based TP
+  atr_tp_factor: 1.0                # ATR TP factor
   recenter_steps: 2                   # 价格偏离多少格后平移 Anchor
   recenter_cooldown: 20               # 平移冷却时间(秒)
-  max_net_vol: 3                    # 最大净持仓手数 (Neutral 模式风控)
+  max_net_vol: 5                   # 最大净持仓手数 (Neutral 模式风控)
 
 - symbol: "EURUSDc"                  # 欧美
   magic: 1008                         # 策略唯一ID
@@ -26,20 +28,22 @@
   min_p: 0.9                          # 最小交易价格
   max_p: 1.5                          # 最大交易价格
   enabled: true                       # 是否启用
-  mode: neutral                       # 多空双开(neutral), 仅做多(long), 仅做空(short)
-  use_atr: false                      # 是否使用 ATR 动态步长
+  mode: long                     # 多空双开(neutral), 仅做多(long), 仅做空(short)
+  use_atr: true                      # 是否使用 ATR 动态步长
   atr_period: 14                      # ATR 周期
   atr_factor: 1.0                     # ATR 系数
+  use_atr_tp: true                  # ATR-based TP
+  atr_tp_factor: 1.0                # ATR TP factor
   recenter_steps: 2                   # 价格偏离多少格后平移 Anchor
   recenter_cooldown: 20               # 平移冷却时间(秒)
-  max_net_vol: 3                    # 最大净持仓手数 (Neutral 模式风控)
+  max_net_vol: 5                  # 最大净持仓手数 (Neutral 模式风控)
 
 
 - symbol: "BTCUSDc"                  # 比特
   magic: 1003                         # 策略唯一ID
-  lot: 0.09                           # 交易手数
-  step: 55                           # 网格间距
-  tp_dist: 88                        # 止盈距离
+  lot: 0.07                           # 交易手数
+  step: 133                           # 网格间距
+  tp_dist: 311                        # 止盈距离
   window: 3                           # 盘口挂单数量 (单边)
   min_p: 70000                        # 最小交易价格
   max_p: 1400000.0                    # 最大交易价格
@@ -48,28 +52,32 @@
   use_atr: true                      # 是否使用 ATR 动态步长
   atr_period: 14                      # ATR 周期
   atr_factor: 1.0                     # ATR 系数
+  use_atr_tp: true                  # ATR-based TP
+  atr_tp_factor: 1.0                # ATR TP factor
   recenter_steps: 5                   # 价格偏离多少格后平移 Anchor
   recenter_cooldown: 60               # 平移冷却时间(秒)
-  max_net_vol: 1.5                    # 最大净持仓手数 (Neutral 模式风控)
+  max_net_vol: 3                    # 最大净持仓手数 (Neutral 模式风控)
 
 
 
 - symbol: "XAUUSDc"                  # 交易品种
   magic: 1001                         # 策略唯一ID (Magic Number)
-  lot: 0.05                           # 交易手数
-  step: 4                             # 网格间距 (价格单位)
-  tp_dist: 5.8                        # 止盈距离 (价格单位)
+  lot: 0.09                   # 交易手数
+  step: 3                         # 网格间距 (价格单位)
+  tp_dist: 6.1                # 止盈距离 (价格单位)
   window: 3                           # 盘口挂单数量 (单边)
   min_p: 4000.0                       # 最小交易价格
   max_p: 48000.0                      # 最大交易价格
   enabled: true                       # 是否启用
   mode: long                          # 多空双开(neutral), 仅做多(long), 仅做空(short)
-  use_atr: false                      # 是否使用 ATR 动态步长
+  use_atr: true                      # 是否使用 ATR 动态步长
   atr_period: 14                      # ATR 周期
   atr_factor: 1.0                     # ATR 系数 (Step = ATR * factor)
+  use_atr_tp: true                  # ATR-based TP
+  atr_tp_factor: 1.0                # ATR TP factor
   recenter_steps: 3                   # 价格偏离多少格后平移 Anchor
   recenter_cooldown: 30               # 平移冷却时间(秒)
-  max_net_vol: 1.5                    # 最大净持仓手数 (Neutral 模式风控)
+  max_net_vol: 1.8                    # 最大净持仓手数 (Neutral 模式风控)
   max_new_orders_per_update: 10       # 每轮最多补单数量
   # ===== 严格对冲参数（新增）===== 
   hedge_enabled: true                 # 是否启用对冲

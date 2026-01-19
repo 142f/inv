@@ -15,6 +15,7 @@ class GridStrategy:
     def __init__(self, symbol, step, tp_dist, lot, magic, 
                  window=6, min_p=0, max_p=999999, enabled=True, 
                  use_atr=False, atr_period=14, atr_factor=1.0, atr_mode="wilder", atr_timeframe="M15",
+                 use_atr_tp=False, atr_tp_factor=1.0,
                  mode="neutral", buy_window=None, sell_window=None, 
                  out_of_range_action="freeze", 
                  atr_update_seconds=5, atr_smooth=0.1, atr_change_threshold=0.01,
@@ -60,6 +61,8 @@ class GridStrategy:
         :param atr_factor: ATR 乘数 (Step = ATR * factor)
         :param atr_mode: ATR 模式: "wilder" | "ema" | "sma"
         :param atr_timeframe: ATR 时间周期 (例如 "M15", "H1")
+        :param use_atr_tp: 是否启用 ATR 动态止盈
+        :param atr_tp_factor: ATR 止盈系数 (TP = ATR * factor)
         :param mode: "neutral" | "long" | "short"
         :param buy_window: 买单窗口大小 (默认等于 window)
         :param sell_window: 卖单窗口大小 (默认等于 window)
@@ -68,6 +71,7 @@ class GridStrategy:
         self.symbol = symbol
         self.base_step = float(step) # 保存初始步长
         self.step = float(step)
+        self.base_tp_dist = float(tp_dist)
         self.tp_dist = float(tp_dist)
         self.lot = float(lot)
         self.magic = int(magic)
@@ -81,6 +85,8 @@ class GridStrategy:
         self.atr_factor = atr_factor
         self.atr_mode = atr_mode
         self.atr_timeframe = atr_timeframe
+        self.use_atr_tp = use_atr_tp
+        self.atr_tp_factor = atr_tp_factor
         
         # 新增参数
         self.mode = mode
@@ -333,6 +339,7 @@ class GridStrategy:
             self.vol_min = info.volume_min
             self.vol_max = info.volume_max
             self.vol_step = info.volume_step
+            self.filling_mode = getattr(info, "filling_mode", None)
             self.initialized = True
         else:
             self.digits = 2
@@ -341,6 +348,7 @@ class GridStrategy:
             self.vol_min = 0.01
             self.vol_max = 100
             self.vol_step = 0.01
+            self.filling_mode = None
             self.initialized = False
             Logger.log(self.symbol, "WARN", "初始化获取品种信息失败，使用默认值")
 
@@ -499,6 +507,13 @@ class GridStrategy:
             price = self._normalize_price(price)
             tp = self._normalize_price(price + self.tp_dist)
             vol = self._normalize_volume(self.lot)
+            filling_mode = self.filling_mode
+            if filling_mode not in (
+                mt5.ORDER_FILLING_FOK,
+                mt5.ORDER_FILLING_IOC,
+                mt5.ORDER_FILLING_RETURN,
+            ):
+                filling_mode = None
 
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
@@ -510,8 +525,9 @@ class GridStrategy:
                 "deviation": 20,  # 允许 20 点的滑点
                 "magic": self.magic,
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_RETURN,
             }
+            if filling_mode is not None:
+                request["type_filling"] = filling_mode
             
             if self._action_collector is not None:
                 self._queue_action(request)
@@ -531,7 +547,7 @@ class GridStrategy:
 
             # 填充模式兼容
             if result.retcode == 10030: 
-                del request["type_filling"]
+                request.pop("type_filling", None)
                 result = self._dispatch_request(request)
                 
                 if result is None:
@@ -584,6 +600,13 @@ class GridStrategy:
             price = self._normalize_price(price)
             tp = self._normalize_price(price - self.tp_dist)
             vol = self._normalize_volume(self.lot)
+            filling_mode = self.filling_mode
+            if filling_mode not in (
+                mt5.ORDER_FILLING_FOK,
+                mt5.ORDER_FILLING_IOC,
+                mt5.ORDER_FILLING_RETURN,
+            ):
+                filling_mode = None
 
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
@@ -595,8 +618,9 @@ class GridStrategy:
                 "deviation": 20,  # 允许 20 点的滑点
                 "magic": self.magic,
                 "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_RETURN,
             }
+            if filling_mode is not None:
+                request["type_filling"] = filling_mode
             
             if self._action_collector is not None:
                 self._queue_action(request)
@@ -616,7 +640,7 @@ class GridStrategy:
 
             # 填充模式兼容
             if result.retcode == 10030: 
-                del request["type_filling"]
+                request.pop("type_filling", None)
                 result = self._dispatch_request(request)
                 
                 if result is None:
@@ -967,21 +991,32 @@ class GridStrategy:
             self.pause_until = spread_check.pause_until
             return
 
-        # --- ATR 自适应步长逻辑 ---
-        if self.use_atr:
+        # --- ATR adaptive step/tp ---
+        atr_value = None
+        if self.use_atr or self.use_atr_tp:
             atr_value = atr if atr is not None else self._calculate_atr()
-            if atr_value:
-                new_step = atr_value * self.atr_factor
-                # ??????
-                min_s = self.base_step * self.min_step_mult
-                max_s = self.base_step * self.max_step_mult
-                new_step = max(min_s, min(max_s, new_step))
-                precision = max(1, int(self.digits))
-                new_step = round(new_step, precision)
-                change_ratio = abs(new_step - self.step) / max(self.step, 1e-9)
-                # ???????????????
-                if change_ratio > self.atr_change_threshold:
-                    self.step = new_step
+
+        if self.use_atr and atr_value:
+            new_step = atr_value * self.atr_factor
+            min_s = self.base_step * self.min_step_mult
+            max_s = self.base_step * self.max_step_mult
+            new_step = max(min_s, min(max_s, new_step))
+            precision = max(1, int(self.digits))
+            new_step = round(new_step, precision)
+            change_ratio = abs(new_step - self.step) / max(self.step, 1e-9)
+            if change_ratio > self.atr_change_threshold:
+                self.step = new_step
+
+        if self.use_atr_tp and atr_value:
+            new_tp = atr_value * self.atr_tp_factor
+            min_tp = self.base_tp_dist * self.min_step_mult
+            max_tp = self.base_tp_dist * self.max_step_mult
+            new_tp = max(min_tp, min(max_tp, new_tp))
+            precision = max(1, int(self.digits))
+            new_tp = round(new_tp, precision)
+            change_ratio = abs(new_tp - self.tp_dist) / max(self.tp_dist, 1e-9)
+            if change_ratio > self.atr_change_threshold:
+                self.tp_dist = new_tp
 
         mid_price = (tick.bid + tick.ask) / 2
         

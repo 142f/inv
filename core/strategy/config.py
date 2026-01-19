@@ -8,6 +8,7 @@ from typing import Any, Dict
 _BOOL_KEYS = {
     "enabled",
     "use_atr",
+    "use_atr_tp",
     "hedge_enabled",
 }
 
@@ -38,6 +39,7 @@ _FLOAT_KEYS = {
     "min_p",
     "max_p",
     "atr_factor",
+    "atr_tp_factor",
     "atr_update_seconds",
     "atr_smooth",
     "atr_change_threshold",

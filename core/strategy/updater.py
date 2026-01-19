@@ -32,9 +32,11 @@ class StrategyUpdater:
                 strategy.step = new_step
                 strategy.base_step = new_step
 
-        for key in ("tp_dist", "lot"):
-            if key in cfg:
-                setattr(strategy, key, cfg[key])
+        if "tp_dist" in cfg:
+            strategy.tp_dist = cfg["tp_dist"]
+            strategy.base_tp_dist = strategy.tp_dist
+        if "lot" in cfg:
+            strategy.lot = cfg["lot"]
 
         window_changed = False
         if "window" in cfg and cfg.get("window") is not None:
@@ -60,7 +62,7 @@ class StrategyUpdater:
         elif window_changed:
             strategy.sell_window = strategy.window
 
-        for key in ("use_atr", "atr_period", "atr_factor", "atr_mode", "atr_timeframe"):
+        for key in ("use_atr", "use_atr_tp", "atr_period", "atr_factor", "atr_tp_factor", "atr_mode", "atr_timeframe"):
             if key in cfg:
                 setattr(strategy, key, cfg[key])
 
