@@ -42,7 +42,11 @@ class DataFeed:
 
         # 增加数据量以确保 EMA/Wilder 计算能够收敛 (5x period 通常足够)
         lookback = max(int(period) * 5, 50)
-        rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, lookback + 1)
+        if getattr(self.broker, "lock", None) is not None:
+            with self.broker.lock:
+                rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, lookback + 1)
+        else:
+            rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, lookback + 1)
         if rates is None or len(rates) < int(period) + 1:
             return state.last_value
 

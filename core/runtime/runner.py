@@ -133,9 +133,17 @@ class Runner:
                             action_collector=actions,
                         )
                     if actions:
+                        # Send queued requests with the strategy's fill-mode fallback.
+                        strategy._action_collector = None
                         for request in actions:
-                            with self.broker.lock:
-                                result = self.broker.order_send(request)
+                            if (
+                                isinstance(request, dict)
+                                and request.get("action") in (mt5.TRADE_ACTION_DEAL, mt5.TRADE_ACTION_PENDING)
+                            ):
+                                result = strategy._send_with_fillings(request)
+                            else:
+                                with self.broker.lock:
+                                    result = self.broker.order_send(request)
                             if result is None:
                                 Logger.log(strategy.symbol, "ERROR", f"order_send returned None. Error: {mt5.last_error()}")
                                 continue

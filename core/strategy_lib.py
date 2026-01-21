@@ -12,6 +12,16 @@ class _QueuedResult:
         self.order = 0
 
 class GridStrategy:
+    _TIMEFRAME_MAP = {
+        "M1": mt5.TIMEFRAME_M1,
+        "M5": mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15,
+        "M30": mt5.TIMEFRAME_M30,
+        "H1": mt5.TIMEFRAME_H1,
+        "H4": mt5.TIMEFRAME_H4,
+        "D1": mt5.TIMEFRAME_D1,
+    }
+
     def __init__(self, symbol, step, tp_dist, lot, magic, 
                  window=6, min_p=0, max_p=999999, enabled=True, 
                  use_atr=False, atr_period=14, atr_factor=1.0, atr_mode="wilder", atr_timeframe="M15",
@@ -337,6 +347,16 @@ class GridStrategy:
             # 行情缓存
             self._rates_cache_ts = 0.0
             self._rates_cache = None
+
+    @staticmethod
+    def _precision_from_step(step: float) -> int:
+        if step <= 0:
+            return 2
+        text = f"{step:.10f}".rstrip("0").rstrip(".")
+        if "." in text:
+            return len(text.split(".")[1])
+        return 0
+
     def _cache_symbol_info(self):
         if self.lock:
             with self.lock:
@@ -351,6 +371,7 @@ class GridStrategy:
             self.vol_min = info.volume_min
             self.vol_max = info.volume_max
             self.vol_step = info.volume_step
+            self.vol_precision = self._precision_from_step(self.vol_step)
             self.filling_mode = getattr(info, "filling_mode", None)
             self.initialized = True
         else:
@@ -360,6 +381,7 @@ class GridStrategy:
             self.vol_min = 0.01
             self.vol_max = 100
             self.vol_step = 0.01
+            self.vol_precision = 2
             self.filling_mode = None
             self.initialized = False
             Logger.log(self.symbol, "WARN", "初始化获取品种信息失败，使用默认值")
@@ -372,7 +394,8 @@ class GridStrategy:
         if self.vol_step > 0:
             steps = round(vol / self.vol_step)
             vol = steps * self.vol_step
-        return float(round(max(self.vol_min, min(self.vol_max, vol)), 2))
+        precision = getattr(self, "vol_precision", 2)
+        return float(round(max(self.vol_min, min(self.vol_max, vol)), precision))
 
     def _get_grid_level(self, price, anchor):
         """以 anchor 为锚点，把 price snap 到最近的网格线"""
@@ -382,6 +405,9 @@ class GridStrategy:
 
     def _init_anchor_if_needed(self, mid_price):
         if self.anchor is None:
+            if self.step <= 0:
+                self.anchor = self._normalize_price(mid_price)
+                return
             # 用当前价格作为初始anchor，并snap到网格线上
             base0 = round(mid_price / self.step) * self.step
             self.anchor = self._normalize_price(base0)
@@ -389,6 +415,8 @@ class GridStrategy:
 
     def _maybe_recenter(self, mid_price):
         """触发条件：偏离>=recenter_steps*step 且超过冷却时间"""
+        if self.step <= 0 or self.anchor is None:
+            return False
         now = time.time()
         if now - self._last_recenter_time < self.recenter_cooldown:
             return False
@@ -406,29 +434,11 @@ class GridStrategy:
 
     def _resolve_timeframe(self):
         timeframe = str(self.atr_timeframe or "M15").upper()
-        mapping = {
-            "M1": mt5.TIMEFRAME_M1,
-            "M5": mt5.TIMEFRAME_M5,
-            "M15": mt5.TIMEFRAME_M15,
-            "M30": mt5.TIMEFRAME_M30,
-            "H1": mt5.TIMEFRAME_H1,
-            "H4": mt5.TIMEFRAME_H4,
-            "D1": mt5.TIMEFRAME_D1,
-        }
-        return mapping.get(timeframe, mt5.TIMEFRAME_M15)
+        return self._TIMEFRAME_MAP.get(timeframe, mt5.TIMEFRAME_M15)
 
     def _resolve_adaptive_timeframe(self):
         timeframe = str(self.adaptive_timeframe or self.atr_timeframe or "M15").upper()
-        mapping = {
-            "M1": mt5.TIMEFRAME_M1,
-            "M5": mt5.TIMEFRAME_M5,
-            "M15": mt5.TIMEFRAME_M15,
-            "M30": mt5.TIMEFRAME_M30,
-            "H1": mt5.TIMEFRAME_H1,
-            "H4": mt5.TIMEFRAME_H4,
-            "D1": mt5.TIMEFRAME_D1,
-        }
-        return mapping.get(timeframe, mt5.TIMEFRAME_M15)
+        return self._TIMEFRAME_MAP.get(timeframe, mt5.TIMEFRAME_M15)
 
     def _calculate_atr_series(self, tr, period: int, mode: str) -> np.ndarray:
         period = max(1, int(period))
@@ -606,15 +616,40 @@ class GridStrategy:
             return False
         return True
 
+    def _prepare_request(self, request):
+        if request is None:
+            return None
+        if not isinstance(request, dict):
+            return request
+        action = request.get("action")
+        if action not in (mt5.TRADE_ACTION_DEAL, mt5.TRADE_ACTION_PENDING):
+            return request
+        if "type_filling" in request:
+            return request
+        allowed = (
+            mt5.ORDER_FILLING_FOK,
+            mt5.ORDER_FILLING_IOC,
+            mt5.ORDER_FILLING_RETURN,
+        )
+        if self.filling_mode in allowed:
+            req = dict(request)
+            req["type_filling"] = self.filling_mode
+            return req
+        return request
+
     def _queue_action(self, request):
         if self._action_collector is None:
             return False
-        self._action_collector.append(request)
+        request = self._prepare_request(request)
+        if request is not None:
+            self._action_collector.append(request)
         return True
 
     def _dispatch_request(self, request):
+        request = self._prepare_request(request)
         if self._action_collector is not None:
-            self._action_collector.append(request)
+            if request is not None:
+                self._action_collector.append(request)
             return _QueuedResult()
         if self.lock:
             with self.lock:
@@ -1467,35 +1502,6 @@ class GridStrategy:
             cap_msg = "CAP | " + " | ".join(cells)
             Logger.log(self.symbol, "STATUS", cap_msg)
         
-        # 搜索范围需要覆盖: window + recenter_steps + 缓冲
-        # 防止因为 anchor 偏离导致生成的层级被过滤掉后数量不足
-        search_range_buy = self.buy_window + self.recenter_steps + 5
-        search_range_sell = self.sell_window + self.recenter_steps + 5
-
-        # 只有在价格范围内才补单 (虽然前面有边界检查，但这里是生成逻辑)
-        if False and self.min_price <= mid_price <= self.max_price:
-            # 生成买单目标 (下方)
-            if self.mode in ["neutral", "long"]:
-                # 从 0 开始，围绕 Anchor 向下铺设 (包含 Anchor 本身)
-                for i in range(0, search_range_buy):
-                    level = self._normalize_price(self.anchor - (i * self.step))
-                    if level < tick.ask and level >= self.min_price:
-                        target_buys.append(level)
-                # 截取窗口大小
-                target_buys = target_buys[:self.buy_window]
-
-            # 生成卖单目标 (上方)
-            if self.mode in ["neutral", "short"]:
-                # 从 0 开始，围绕 Anchor 向上铺设 (包含 Anchor 本身)
-                for i in range(0, search_range_sell):
-                    level = self._normalize_price(self.anchor + (i * self.step))
-                    if level > tick.bid and level <= self.max_price:
-                        target_sells.append(level)
-                # 截取窗口大小
-                target_sells = target_sells[:self.sell_window]
-                # 按照价格从高到低排序 (符合用户习惯)
-                target_sells.sort(reverse=True)
-
         # 3. 挂单维护逻辑
         
         # A. TRIM (清理多余/超界挂单)
