@@ -87,7 +87,14 @@ class StrategyUpdater:
             "max_new_orders_per_update",
         ):
             if key in cfg:
-                setattr(strategy, key, cfg[key])
+                value = cfg[key]
+                # 对数值类型字段进行类型转换，防止字符串类型导致比较错误
+                if key in ("recenter_steps", "max_long_pos", "max_short_pos", "max_new_orders_per_update"):
+                    value = int(value) if value is not None else None
+                elif key in ("recenter_cooldown", "max_long_vol", "max_short_vol", "max_net_vol",
+                             "max_spread_points", "extreme_cooldown"):
+                    value = float(value) if value is not None else None
+                setattr(strategy, key, value)
 
         for key in (
             "hedge_enabled",

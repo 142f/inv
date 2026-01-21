@@ -145,9 +145,11 @@ class Runner:
                                     "ORDER_FAIL",
                                     f"RC: {result.retcode} | {getattr(result, 'comment', '')}",
                                 )
-                    strategy._action_collector = None
                 except Exception as exc:
                     Logger.log(strategy.symbol, "ERROR", f"策略执行异常: {exc}")
+                finally:
+                    # 确保无论是否发生异常都清理 action_collector
+                    strategy._action_collector = None
 
             time.sleep(interval)
 

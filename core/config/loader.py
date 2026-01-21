@@ -90,7 +90,9 @@ class ConfigLoader:
         self._ensure_positive(cfg, "step")
         self._ensure_positive(cfg, "tp_dist")
         self._ensure_positive(cfg, "lot")
-        self._ensure_positive(cfg, "window", allow_zero=False)
+        # window 是可选字段，有默认值，只在配置了的情况下验证
+        if "window" in cfg:
+            self._ensure_positive(cfg, "window", allow_zero=False)
 
         min_p = float(cfg.get("min_p", 0))
         max_p = float(cfg.get("max_p", 0))
@@ -99,7 +101,8 @@ class ConfigLoader:
 
     def _ensure_positive(self, cfg: dict, key: str, allow_zero: bool = False):
         if key not in cfg:
-            raise ConfigValidationError(f"Missing field {key}")
+            # 可选字段不存在时跳过验证
+            return
         try:
             value = float(cfg[key])
         except Exception:

@@ -2,15 +2,15 @@
 # ????????????????????
 - symbol: "USDJPYc"             # 美日
   magic: 1002                   # 策略唯一ID
-  lot: 0.08                     # 交易手数
-  step: 0.05                    # 网格间距
-  tp_dist: 0.06                 # 止盈距离
+  lot: 0.1                     # 交易手数
+  step: 0.075                  # 网格间距
+  tp_dist: 0.099               # 止盈距离
   window: 3                     # 盘口挂单数量 (单边)
   min_p: 150                    # 最小交易价格
   max_p: 170                    # 最大交易价格
   enabled: true                 # 是否启用
-  mode: neutral                 # 多空双开(neutral), 仅做多(long), 仅做空(short)
-  use_atr: true                 # 是否使用 ATR 动态步长
+  mode: long                 # 多空双开(neutral), 仅做多(long), 仅做空(short)
+  use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
   atr_factor: 1.0               # ATR 系数 (step/tp_dist 共用)
   atr_mode: ema                 # ATR 计算方式: wilder | ema | sma
@@ -30,15 +30,15 @@
 
 - symbol: "EURUSDc"             # 欧美
   magic: 1008                   # 策略唯一ID
-  lot: 0.08                     # 交易手数
-  step: 0.004                   # 网格间距
-  tp_dist: 0.0045               # 止盈距离
+  lot: 0.1                     # 交易手数
+  step: 0.001                 # 网格间距
+  tp_dist: 0.0013               # 止盈距离
   window: 3                     # 盘口挂单数量 (单边)
   min_p: 0.9                    # 最小交易价格
   max_p: 1.5                    # 最大交易价格
   enabled: true                 # 是否启用
   mode: long                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
-  use_atr: true                 # 是否使用 ATR 动态步长
+  use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
   atr_factor: 1.0               # ATR 系数 (step/tp_dist 共用)
   atr_mode: ema                 # ATR 计算方式: wilder | ema | sma
@@ -59,15 +59,15 @@
 
 - symbol: "BTCUSDc"             # 比特
   magic: 1003                   # 策略唯一ID
-  lot: 0.07                     # 交易手数
-  step: 133                     # 网格间距
-  tp_dist: 311                  # 止盈距离
+  lot: 0.05                    # 交易手数
+  step: 211                    # 网格间距
+  tp_dist: 399               # 止盈距离
   window: 3                     # 盘口挂单数量 (单边)
   min_p: 70000                  # 最小交易价格
   max_p: 1400000.0              # 最大交易价格
-  enabled: true                 # 是否启用
+  enabled: false                 # 是否启用
   mode: long                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
-  use_atr: true                 # 是否使用 ATR 动态步长
+  use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
   atr_factor: 1.0               # ATR 系数 (step/tp_dist 共用)
   atr_mode: ema                 # ATR 计算方式: wilder | ema | sma
@@ -87,16 +87,45 @@
 
 
 
+- symbol: "BTCUSDc"             # 比特
+  magic: 10031                   # 策略唯一ID
+  lot: 0.05                    # 交易手数
+  step: 211                    # 网格间距
+  tp_dist: 399               # 止盈距离
+  window: 3                     # 盘口挂单数量 (单边)
+  min_p: 70000                  # 最小交易价格
+  max_p: 1400000.0              # 最大交易价格
+  enabled: true                # 是否启用
+  mode: short                  # 多空双开(neutral), 仅做多(long), 仅做空(short)
+  use_atr: false                # 是否使用 ATR 动态步长
+  atr_period: 20                # ATR 周期
+  atr_factor: 1.0               # ATR 系数 (step/tp_dist 共用)
+  atr_mode: ema                 # ATR 计算方式: wilder | ema | sma
+  adaptive_enabled: true        # 动态参数开关(仅新K线触发)
+  adaptive_timeframe: "M15"     # 动态参数周期
+  adaptive_lookback: 200        # 回看K线数量
+  adaptive_quantile_low: 0.30   # 低波动分位
+  adaptive_quantile_high: 0.70  # 高波动分位
+  adaptive_step_mult_low: 0.90  # 低波动步长系数
+  adaptive_step_mult_high: 1.10 # 高波动步长系数
+  adaptive_lot_min_mult: 0.5  # 最小仓位倍数
+  adaptive_lot_max_mult: 2.00   # 最大仓位倍数
+  adaptive_range_buffer_atr: 1.0 # 区间缓冲(ATR倍数)
+  recenter_steps: 5             # 价格偏离多少格后平移 Anchor
+  recenter_cooldown: 60         # 平移冷却时间(秒)
+  max_net_vol: 3                # 最大净持仓手数 (Neutral 模式风控)
+
+
 - symbol: "XAUUSDc"             # 交易品种
   magic: 1001                   # 策略唯一ID
-  lot: 0.09                     # 交易手数
-  step: 3                       # 网格间距
-  tp_dist: 5.2                  # 止盈距离
+  lot: 0.04              # 交易手数
+  step: 4.5                       # 网格间距
+  tp_dist:  6.5            # 止盈距离
   window: 3                     # 盘口挂单数量 (单边)
   min_p: 4000.0                 # 最小交易价格
-  max_p: 48000.0                # 最大交易价格
+  max_p: 4999            # 最大交易价格
   enabled: true                 # 是否启用
-  mode: long                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
+  mode: short                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
   atr_factor: 0.9               # ATR 系数 (step/tp_dist 共用)

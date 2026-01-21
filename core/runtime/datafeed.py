@@ -40,36 +40,37 @@ class DataFeed:
         if (now - state.last_time) < float(update_seconds):
             return state.last_value
 
-        rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, int(period) + 1)
+        # 增加数据量以确保 EMA/Wilder 计算能够收敛 (5x period 通常足够)
+        lookback = max(int(period) * 5, 50)
+        rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, lookback + 1)
         if rates is None or len(rates) < int(period) + 1:
             return state.last_value
 
-        highs = rates["high"]
-        lows = rates["low"]
-        closes = rates["close"]
-        prev_closes = closes[:-1]
-        curr_highs = highs[1:]
-        curr_lows = lows[1:]
+        # 丢弃最后一根未完成的 K 线
+        rates = rates[:-1]
+        highs = rates["high"][1:]
+        lows = rates["low"][1:]
+        prev_closes = rates["close"][:-1]
 
         tr = np.maximum(
-            curr_highs - curr_lows,
-            np.maximum(abs(curr_highs - prev_closes), abs(curr_lows - prev_closes)),
+            highs - lows,
+            np.maximum(abs(highs - prev_closes), abs(lows - prev_closes)),
         )
+
+        if len(tr) < int(period):
+            return state.last_value
 
         mode = str(mode or "wilder").lower()
         if mode == "sma":
-            raw_atr = float(np.mean(tr))
-        elif mode == "ema":
-            if state.last_value is None:
-                raw_atr = float(np.mean(tr))
-            else:
-                alpha = 2.0 / (period + 1.0)
-                raw_atr = (state.last_value * (1 - alpha)) + (tr[-1] * alpha)
+            raw_atr = float(np.mean(tr[-int(period):]))
         else:
-            if state.last_value is None:
-                raw_atr = float(np.mean(tr))
-            else:
-                raw_atr = (state.last_value * (period - 1) + tr[-1]) / period
+            # Wilder (alpha=1/N) 或 EMA (alpha=2/(N+1))
+            # 使用 SMA 初始化，然后递归计算
+            current_atr = float(np.mean(tr[:int(period)]))
+            alpha = 2.0 / (period + 1.0) if mode == "ema" else 1.0 / period
+            for i in range(int(period), len(tr)):
+                current_atr = (current_atr * (1.0 - alpha)) + (tr[i] * alpha)
+            raw_atr = current_atr
 
         if smooth:
             if state.last_value is None:

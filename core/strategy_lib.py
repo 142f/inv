@@ -621,6 +621,32 @@ class GridStrategy:
                 return mt5.order_send(request)
         return mt5.order_send(request)
 
+    def _send_with_fillings(self, request):
+        candidates = []
+        default = self.filling_mode
+        allowed = (
+            mt5.ORDER_FILLING_FOK,
+            mt5.ORDER_FILLING_IOC,
+            mt5.ORDER_FILLING_RETURN,
+        )
+        if default in allowed:
+            candidates.append(default)
+        for mode in (mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK):
+            if mode not in candidates:
+                candidates.append(mode)
+
+        last_result = None
+        for mode in candidates:
+            req = dict(request)
+            req['type_filling'] = mode
+            last_result = self._dispatch_request(req)
+            if last_result is None:
+                return None
+            if last_result.retcode != 10030:
+                return last_result
+
+        return self._dispatch_request(request)
+
     def _index_orders(self, my_orders):
         self.bid_orders = {}
         self.ask_orders = {}
@@ -642,14 +668,6 @@ class GridStrategy:
             atr_coef = 1.0
             if self.use_atr and self.base_step:
                 atr_coef = self.step / self.base_step
-            filling_mode = self.filling_mode
-            if filling_mode not in (
-                mt5.ORDER_FILLING_FOK,
-                mt5.ORDER_FILLING_IOC,
-                mt5.ORDER_FILLING_RETURN,
-            ):
-                filling_mode = None
-
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
                 "symbol": self.symbol,
@@ -661,8 +679,6 @@ class GridStrategy:
                 "magic": self.magic,
                 "type_time": mt5.ORDER_TIME_GTC,
             }
-            if filling_mode is not None:
-                request["type_filling"] = filling_mode
             
             if self._action_collector is not None:
                 self._queue_action(request)
@@ -673,7 +689,7 @@ class GridStrategy:
                 )
                 return True
             
-            result = self._dispatch_request(request)
+            result = self._send_with_fillings(request)
             
             if result is None:
                 last_error = mt5.last_error()
@@ -681,15 +697,6 @@ class GridStrategy:
                 return None
 
             # 填充模式兼容
-            if result.retcode == 10030: 
-                request.pop("type_filling", None)
-                result = self._dispatch_request(request)
-                
-                if result is None:
-                    last_error = mt5.last_error()
-                    Logger.log(self.symbol, "ERROR", f"下单返回 None (重试时). Error: {last_error}")
-                    return None
-            
             # 统一错误处理
             if result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
                 # 如果是价格变动 (Requote)，尝试重试一次
@@ -705,7 +712,7 @@ class GridStrategy:
                         
                     if tick:
                         # 重新获取价格并重试 (这里其实应该重新计算 price，但为了简单重试原价)
-                        result = self._dispatch_request(request)
+                        result = self._send_with_fillings(request)
                         
                         if result is None:
                             last_error = mt5.last_error()
@@ -746,14 +753,6 @@ class GridStrategy:
             atr_coef = 1.0
             if self.use_atr and self.base_step:
                 atr_coef = self.step / self.base_step
-            filling_mode = self.filling_mode
-            if filling_mode not in (
-                mt5.ORDER_FILLING_FOK,
-                mt5.ORDER_FILLING_IOC,
-                mt5.ORDER_FILLING_RETURN,
-            ):
-                filling_mode = None
-
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
                 "symbol": self.symbol,
@@ -765,8 +764,6 @@ class GridStrategy:
                 "magic": self.magic,
                 "type_time": mt5.ORDER_TIME_GTC,
             }
-            if filling_mode is not None:
-                request["type_filling"] = filling_mode
             
             if self._action_collector is not None:
                 self._queue_action(request)
@@ -777,7 +774,7 @@ class GridStrategy:
                 )
                 return True
             
-            result = self._dispatch_request(request)
+            result = self._send_with_fillings(request)
             
             if result is None:
                 last_error = mt5.last_error()
@@ -785,15 +782,6 @@ class GridStrategy:
                 return None
 
             # 填充模式兼容
-            if result.retcode == 10030: 
-                request.pop("type_filling", None)
-                result = self._dispatch_request(request)
-                
-                if result is None:
-                    last_error = mt5.last_error()
-                    Logger.log(self.symbol, "ERROR", f"下单返回 None (重试时). Error: {last_error}")
-                    return None
-            
             # 统一错误处理
             if result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
                 # 如果是价格变动 (Requote)，尝试重试一次
@@ -802,9 +790,9 @@ class GridStrategy:
                     time.sleep(0.1)
                     if self.lock:
                         with self.lock:
-                            result = self._dispatch_request(request)
+                            result = self._send_with_fillings(request)
                     else:
-                        result = self._dispatch_request(request)
+                        result = self._send_with_fillings(request)
                     
                     if result is None:
                         last_error = mt5.last_error()
@@ -839,6 +827,9 @@ class GridStrategy:
         if retcode == 10018: # MARKET_CLOSED
             Logger.log(self.symbol, "SLEEP", "市场休市，暂停运行 5 分钟")
             self.pause_until = time.time() + 300
+        elif retcode == 10017: # TRADE_DISABLED
+            Logger.log(self.symbol, 'WARN', 'Trade disabled. Check terminal/account/symbol permissions.')
+            self.pause_until = time.time() + 60
         elif retcode == 10027: # CLIENT_DISABLES_AT
             Logger.log(self.symbol, "CRITICAL", "MT5 终端 '自动交易' (Algo Trading) 未开启！请在 MT5 软件上方点击 'Algo Trading' 按钮。")
             self.enabled = False # 必须停止，否则会死循环
@@ -890,14 +881,39 @@ class GridStrategy:
 
         return long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol
 
-    def _allow_side(self, side, long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol):
+    def _allow_side(self, side, long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
+                     *, long_pos_count: int = 0, short_pos_count: int = 0):
         """
         side: "buy" or "sell"
         mode handling:
           - neutral: abs(net) <= max_net_vol
-          - long:    cap long exposure by max_net_vol
-          - short:   cap short exposure by max_net_vol
+          - long:    cap long exposure by max_net_vol, prevent net going negative
+          - short:   cap short exposure by max_net_vol, prevent net going positive
+        
+        Also checks:
+          - max_long_vol / max_short_vol (单边持仓量上限)
+          - max_long_pos / max_short_pos (单边持仓数量上限)
         """
+        lot = self.lot
+        
+        # --- 1. 单边持仓量限制 (max_long_vol / max_short_vol) ---
+        if side == "buy":
+            if self.max_long_vol is not None:
+                if (long_vol + pending_buy_vol + lot) > self.max_long_vol:
+                    return False
+            if self.max_long_pos is not None:
+                # 每挂一单可能成交，检查持仓数量
+                if (long_pos_count + 1) > self.max_long_pos:
+                    return False
+        else:  # sell
+            if self.max_short_vol is not None:
+                if (short_vol + pending_sell_vol + lot) > self.max_short_vol:
+                    return False
+            if self.max_short_pos is not None:
+                if (short_pos_count + 1) > self.max_short_pos:
+                    return False
+        
+        # --- 2. max_net_vol 检查 ---
         if self.max_net_vol is None:
             return True
 
@@ -906,24 +922,33 @@ class GridStrategy:
         if self.mode == "neutral":
             if side == "buy":
                 # adding buy increases net
-                return abs(net_vol + self.lot) <= cap
+                return abs(net_vol + lot) <= cap
             else:
                 # adding sell decreases net
-                return abs(net_vol - self.lot) <= cap
+                return abs(net_vol - lot) <= cap
 
         if self.mode == "long":
             # cap long exposure
             total_long = long_vol + pending_buy_vol
             if side == "buy":
-                return (total_long + self.lot) <= cap
+                return (total_long + lot) <= cap
             else:
-                return True  # allow sells (take profit / rebalance)
+                # 允许卖出止盈，但不允许 net 变负（避免做空）
+                # 注意：网格卖单是开仓卖，不是平仓，所以要限制
+                new_net = net_vol - lot
+                if new_net < -1e-9:  # 使用小容差避免浮点误差
+                    return False
+                return True
 
         if self.mode == "short":
             total_short = short_vol + pending_sell_vol
             if side == "sell":
-                return (total_short + self.lot) <= cap
+                return (total_short + lot) <= cap
             else:
+                # 允许买入止盈，但不允许 net 变正（避免做多）
+                new_net = net_vol + lot
+                if new_net > 1e-9:
+                    return False
                 return True
 
         return True
@@ -1012,10 +1037,9 @@ class GridStrategy:
             "magic": self.magic,
             "comment": "HEDGE_SELL",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_RETURN,
         }
         
-        return self._dispatch_request(req)
+        return self._send_with_fillings(req)
 
     def _close_sell_position(self, pos_ticket, vol):
         if self.lock:
@@ -1040,10 +1064,9 @@ class GridStrategy:
             "magic": self.magic,
             "comment": "HEDGE_CLOSE",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_RETURN,
         }
         
-        return self._dispatch_request(req)
+        return self._send_with_fillings(req)
 
     def _move_sell_sl_to_breakeven(self, pos):
         if self.lock:
@@ -1228,7 +1251,8 @@ class GridStrategy:
         self._index_orders(my_orders)
             
         # --- 状态播报 (每分钟一次) ---
-        if time.time() - self._last_status_log_time > self._status_log_interval:
+        should_log_status = time.time() - self._last_status_log_time > self._status_log_interval
+        if should_log_status:
             float_profit = sum(p.profit for p in my_positions)
             pos_vol = sum(p.volume for p in my_positions)
             buy_orders = sum(len(v) for v in self.bid_orders.values())
@@ -1357,6 +1381,91 @@ class GridStrategy:
             mode=self.mode,
             recenter_steps=self.recenter_steps,
         )
+
+        if should_log_status and self.max_net_vol is not None and self.lot > 0:
+            long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(
+                my_positions, my_orders
+            )
+            cap = float(self.max_net_vol)
+            side = None
+            current = 0.0
+            remaining = 0.0
+
+            if self.mode == "long":
+                side = "buy"
+                current = long_vol + pending_buy_vol
+                remaining = cap - current
+            elif self.mode == "short":
+                side = "sell"
+                current = short_vol + pending_sell_vol
+                remaining = cap - current
+            else:
+                if net_vol >= 0:
+                    side = "buy"
+                    current = net_vol
+                    remaining = cap - net_vol
+                else:
+                    side = "sell"
+                    current = -net_vol
+                    remaining = cap + net_vol
+
+            def _cap_cell(label: str, value: str, width: int) -> str:
+                return Logger._pad_display(f"{label}{value}", width)
+
+            remark = ""
+            last_target = None
+            diff = None
+
+            if remaining <= 0:
+                max_orders = 0
+            else:
+                max_orders = int((remaining / self.lot) + 1e-9)
+
+            if max_orders > 0:
+                targets = target_buys if side == "buy" else target_sells
+                if max_orders > len(targets) and self.anchor is not None and self.step > 0:
+                    # Use theoretical cap price beyond window.
+                    if side == "buy":
+                        last_target = self._normalize_price(self.anchor - self.step * (max_orders - 1))
+                    else:
+                        last_target = self._normalize_price(self.anchor + self.step * (max_orders - 1))
+                    remark = "窗口不足"
+                elif targets:
+                    idx = min(max_orders, len(targets)) - 1
+                    last_target = targets[idx]
+                else:
+                    remark = "无目标"
+
+                if last_target is not None:
+                    if side == "buy":
+                        diff = tick.ask - last_target
+                    else:
+                        diff = last_target - tick.bid
+                    if last_target < self.min_price or last_target > self.max_price:
+                        remark = "超范围" if not remark else f"{remark},超范围"
+
+            side_cn = "买" if side == "buy" else "卖"
+            cur_price = tick.ask if side == "buy" else tick.bid
+            cur_str = f"{cur_price:.{self.digits}f}"
+            expect_str = f"{last_target:.{self.digits}f}" if last_target is not None else "--"
+            diff_str = f"{diff:+.{self.digits}f}" if diff is not None else "--"
+            remark_str = remark if remark else ""
+
+            cells = [
+                _cap_cell("方向:", side_cn, 8),
+                _cap_cell("上限:", f"{cap:.2f}", 12),
+                _cap_cell("当前:", f"{current:.2f}", 12),
+                _cap_cell("剩余:", f"{max(0.0, remaining):.2f}", 12),
+                _cap_cell("手数:", f"{self.lot:.2f}", 10),
+                _cap_cell("单数:", f"{max_orders}", 8),
+                _cap_cell("现价:", cur_str, 16),
+                _cap_cell("末档价:", expect_str, 16),
+                _cap_cell("差值:", diff_str, 16),
+                _cap_cell("备注:", remark_str, 10),
+            ]
+
+            cap_msg = "CAP | " + " | ".join(cells)
+            Logger.log(self.symbol, "STATUS", cap_msg)
         
         # 搜索范围需要覆盖: window + recenter_steps + 缓冲
         # 防止因为 anchor 偏离导致生成的层级被过滤掉后数量不足
@@ -1417,6 +1526,10 @@ class GridStrategy:
         
         # 统计库存
         long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(my_positions, my_orders)
+        
+        # 统计持仓数量（用于 max_long_pos / max_short_pos 检查）
+        long_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_BUY)
+        short_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_SELL)
 
         existing_buy_prices = set(self.bid_orders.keys())
         existing_sell_prices = set(self.ask_orders.keys())
@@ -1451,12 +1564,14 @@ class GridStrategy:
                 if is_duplicate_pos:
                     continue
 
-            if not self._allow_side("buy", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol):
+            if not self._allow_side("buy", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
+                                    long_pos_count=long_pos_count, short_pos_count=short_pos_count):
                 break
 
             if self._place_buy_order(price):
                 placed_count += 1
-                # 本地更新 net_vol 以便循环内即时生效
+                # 本地更新所有相关变量以便循环内即时生效
+                pending_buy_vol += self.lot
                 net_vol += self.lot
 
         # 补卖单
@@ -1479,9 +1594,12 @@ class GridStrategy:
                 if is_duplicate_pos:
                     continue
 
-            if not self._allow_side("sell", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol):
+            if not self._allow_side("sell", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
+                                    long_pos_count=long_pos_count, short_pos_count=short_pos_count):
                 break
 
             if self._place_sell_order(price):
                 placed_count += 1
+                # 本地更新所有相关变量以便循环内即时生效
+                pending_sell_vol += self.lot
                 net_vol -= self.lot
