@@ -193,6 +193,12 @@ class GridStrategy:
             'short_profitable_amount': 0.0,
             'last_stats_update_time': 0
         }
+
+        # Incremental stats tracking (per-order profit).
+        self._order_profit = {}
+        self._order_type = {}
+        self._last_deal_time = self._stats['last_reset_time']
+        self._last_deal_ticket = 0
         
         # [优化] 缓存静态 Symbol 信息
         self._cache_symbol_info()
@@ -241,6 +247,10 @@ class GridStrategy:
             'short_profitable_amount': 0.0,
             'last_stats_update_time': 0
         }
+        self._order_profit = {}
+        self._order_type = {}
+        self._last_deal_time = self._stats['last_reset_time']
+        self._last_deal_ticket = 0
         Logger.log(self.symbol, "STATS_RESET", f"策略 {self.magic} 统计数据已重置，新的计算周期开始")
 
     def _deal_net_profit(self, deal) -> float:
@@ -249,72 +259,106 @@ class GridStrategy:
         commission = float(getattr(deal, "commission", 0.0) or 0.0)
         return profit + swap + commission
 
-    def _update_stats(self):
-        """更新统计数据"""
-        now = time.time()
-        # 限制更新频率，避免频繁调用MT5 API
-        if now - self._stats['last_stats_update_time'] < 300:  # 每5分钟更新一次
-            return
-        
+    def _deal_time_value(self, deal) -> float:
+        t = getattr(deal, "time", 0)
+        if hasattr(t, "timestamp"):
+            try:
+                return float(t.timestamp())
+            except Exception:
+                pass
         try:
-            # 获取历史成交记录
+            return float(t)
+        except Exception:
+            return 0.0
+
+    def _adjust_profitable_stats(self, order_type: str, amount_delta: float, count_delta: int = 0) -> None:
+        if order_type == "long":
+            self._stats['long_profitable_amount'] += amount_delta
+            self._stats['long_profitable_count'] += count_delta
+        elif order_type == "short":
+            self._stats['short_profitable_amount'] += amount_delta
+            self._stats['short_profitable_count'] += count_delta
+
+    def _apply_deal_to_stats(self, deal) -> None:
+        order_ticket = getattr(deal, "order", None)
+        if order_ticket is None:
+            return
+
+        delta = self._deal_net_profit(deal)
+        prev_total = float(self._order_profit.get(order_ticket, 0.0) or 0.0)
+
+        order_type = self._order_type.get(order_ticket)
+        type_was_known = order_type is not None
+        if order_type is None:
+            if deal.type == mt5.DEAL_TYPE_BUY:
+                order_type = "long"
+            elif deal.type == mt5.DEAL_TYPE_SELL:
+                order_type = "short"
+            if order_type:
+                self._order_type[order_ticket] = order_type
+
+        was_positive = prev_total > 0.0
+        if not type_was_known:
+            was_positive = False
+
+        new_total = prev_total + delta
+        self._order_profit[order_ticket] = new_total
+        is_positive = new_total > 0.0
+
+        if not order_type:
+            return
+
+        if was_positive:
+            if is_positive:
+                self._adjust_profitable_stats(order_type, delta, 0)
+            else:
+                self._adjust_profitable_stats(order_type, -prev_total, -1)
+        else:
+            if is_positive:
+                self._adjust_profitable_stats(order_type, new_total, 1)
+
+    def _update_stats(self):
+        """Update stats incrementally from new deals."""
+        now = time.time()
+        # Limit update frequency to avoid heavy MT5 calls.
+        if now - self._stats['last_stats_update_time'] < 300:  # 5 min
+            return
+
+        try:
+            start_time = self._last_deal_time if self._last_deal_time else self._stats['last_reset_time']
             if self.lock:
                 with self.lock:
-                    # 获取最近的成交记录（从last_reset_time开始）
-                    deals = mt5.history_deals_get(symbol=self.symbol, group="*", start=self._stats['last_reset_time'])
+                    deals = mt5.history_deals_get(symbol=self.symbol, group="*", start=start_time)
             else:
-                deals = mt5.history_deals_get(symbol=self.symbol, group="*", start=self._stats['last_reset_time'])
-            
+                deals = mt5.history_deals_get(symbol=self.symbol, group="*", start=start_time)
+
             if deals:
-                # 重置当前统计周期的数据
-                long_profitable_count = 0
-                long_profitable_amount = 0.0
-                short_profitable_count = 0
-                short_profitable_amount = 0.0
-                
-                # 按订单分组统计
-                orders = {}
+                max_time = float(self._last_deal_time or 0.0)
+                max_ticket = int(self._last_deal_ticket or 0)
                 for deal in deals:
                     if deal.magic != self.magic:
                         continue
-                    if deal.order in orders:
-                        orders[deal.order].append(deal)
-                    else:
-                        orders[deal.order] = [deal]
-                
-                # 统计每个订单的盈利情况
-                for order_ticket, deal_list in orders.items():
-                    # 计算订单的总盈利(含 swap/commission)
-                    total_profit = sum(self._deal_net_profit(deal) for deal in deal_list)
-                    
-                    # 确定订单类型（多单或空单）
-                    order_type = None
-                    for deal in deal_list:
-                        if deal.type == mt5.DEAL_TYPE_BUY:
-                            order_type = "long"
-                            break
-                        elif deal.type == mt5.DEAL_TYPE_SELL:
-                            order_type = "short"
-                            break
-                    
-                    # 统计盈利订单
-                    if total_profit > 0:
-                        if order_type == "long":
-                            long_profitable_count += 1
-                            long_profitable_amount += total_profit
-                        elif order_type == "short":
-                            short_profitable_count += 1
-                            short_profitable_amount += total_profit
-                
-                # 更新统计数据
-                self._stats['long_profitable_count'] = long_profitable_count
-                self._stats['long_profitable_amount'] = long_profitable_amount
-                self._stats['short_profitable_count'] = short_profitable_count
-                self._stats['short_profitable_amount'] = short_profitable_amount
-                self._stats['last_stats_update_time'] = now
-                
+
+                    deal_time = self._deal_time_value(deal)
+                    deal_ticket = int(getattr(deal, "ticket", 0) or 0)
+                    if (deal_time < self._last_deal_time) or (
+                        deal_time == self._last_deal_time and deal_ticket <= self._last_deal_ticket
+                    ):
+                        continue
+
+                    self._apply_deal_to_stats(deal)
+
+                    if (deal_time > max_time) or (deal_time == max_time and deal_ticket > max_ticket):
+                        max_time = deal_time
+                        max_ticket = deal_ticket
+
+                self._last_deal_time = max_time
+                self._last_deal_ticket = max_ticket
+
+            self._stats['last_stats_update_time'] = now
+
         except Exception as e:
-            Logger.log(self.symbol, "EXCEPTION", f"更新统计数据异常: {str(e)}")
+            Logger.log(self.symbol, "EXCEPTION", f"鏇存柊缁熻鏁版嵁寮傚父: {str(e)}")
 
     def set_symbol(self, new_symbol: str, *, reset_runtime_state: bool = True):
         """切换交易品种，并刷新品种信息缓存。
@@ -987,13 +1031,14 @@ class GridStrategy:
             return False, cur, basev
         return cur >= mult * basev, cur, basev
 
-    def _open_hedge_sell(self, vol):
-        if self.lock:
-            with self.lock:
+    def _open_hedge_sell(self, vol, tick=None):
+        if tick is None:
+            if self.lock:
+                with self.lock:
+                    tick = mt5.symbol_info_tick(self.symbol)
+            else:
                 tick = mt5.symbol_info_tick(self.symbol)
-        else:
-            tick = mt5.symbol_info_tick(self.symbol)
-            
+
         if tick is None:
             return None
         vol = self._normalize_volume(vol)
@@ -1013,13 +1058,14 @@ class GridStrategy:
         
         return self._send_with_fillings(req)
 
-    def _close_sell_position(self, pos_ticket, vol):
-        if self.lock:
-            with self.lock:
+    def _close_sell_position(self, pos_ticket, vol, tick=None):
+        if tick is None:
+            if self.lock:
+                with self.lock:
+                    tick = mt5.symbol_info_tick(self.symbol)
+            else:
                 tick = mt5.symbol_info_tick(self.symbol)
-        else:
-            tick = mt5.symbol_info_tick(self.symbol)
-            
+
         if tick is None:
             return None
         vol = self._normalize_volume(vol)
@@ -1040,13 +1086,14 @@ class GridStrategy:
         
         return self._send_with_fillings(req)
 
-    def _move_sell_sl_to_breakeven(self, pos):
-        if self.lock:
-            with self.lock:
+    def _move_sell_sl_to_breakeven(self, pos, tick=None):
+        if tick is None:
+            if self.lock:
+                with self.lock:
+                    tick = mt5.symbol_info_tick(self.symbol)
+            else:
                 tick = mt5.symbol_info_tick(self.symbol)
-        else:
-            tick = mt5.symbol_info_tick(self.symbol)
-            
+
         if tick is None:
             return None
 
@@ -1281,7 +1328,7 @@ class GridStrategy:
             for pos in short_pos:
                 # 空单盈利：open - ask >= be_trigger
                 if (pos.price_open - tick.ask) >= be_trigger:
-                    self._move_sell_sl_to_breakeven(pos)
+                    self._move_sell_sl_to_breakeven(pos, tick=tick)
 
             # --- (B) 入场门槛：波动率90分位 + 成交量>=3倍 ---
             rates = self._get_m1_rates_cached(n=450, cache_sec=10)
@@ -1308,7 +1355,7 @@ class GridStrategy:
 
                         # gross限制 + 本次加仓检查
                         if self.max_gross_vol is None or (gross + vol_to_add <= self.max_gross_vol):
-                            res = self._open_hedge_sell(vol_to_add)
+                            res = self._open_hedge_sell(vol_to_add, tick=tick)
                             if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                                 self._last_hedge_time = now
                                 self._last_hedge_entry_price = mid
@@ -1329,7 +1376,7 @@ class GridStrategy:
                     short_sorted = sorted(short_pos, key=lambda p: p.ticket)
                     pos = short_sorted[0]
                     vol_to_close = min(tranche, pos.volume)
-                    res = self._close_sell_position(pos.ticket, vol_to_close)
+                    res = self._close_sell_position(pos.ticket, vol_to_close, tick=tick)
                     if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                         self._last_hedge_time = now
                         Logger.log(self.symbol, "HEDGE_EXIT",
