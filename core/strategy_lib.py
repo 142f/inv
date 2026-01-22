@@ -458,6 +458,30 @@ class GridStrategy:
             atr_values.append(current_atr)
         return np.array(atr_values, dtype=float)
 
+    def _apply_atr_targets(self, atr_value: float, *, step_mult: float = 1.0) -> None:
+        if atr_value is None or atr_value <= 0 or self.atr_factor <= 0:
+            return
+
+        precision = max(1, int(self.digits))
+        base_step = max(float(self.base_step), self.point)
+        base_tp = max(float(self.base_tp_dist), self.point)
+
+        min_s = max(base_step * self.min_step_mult, self.point)
+        max_s = max(base_step * self.max_step_mult, min_s)
+        new_step = atr_value * self.atr_factor * step_mult
+        new_step = max(min_s, min(max_s, new_step))
+        new_step = round(new_step, precision)
+        if abs(new_step - self.step) / max(self.step, 1e-9) > self.atr_change_threshold:
+            self.step = new_step
+
+        min_tp = max(base_tp * self.min_step_mult, self.point)
+        max_tp = max(base_tp * self.max_step_mult, min_tp)
+        new_tp = atr_value * self.atr_factor * step_mult
+        new_tp = max(min_tp, min(max_tp, new_tp))
+        new_tp = round(new_tp, precision)
+        if abs(new_tp - self.tp_dist) / max(self.tp_dist, 1e-9) > self.atr_change_threshold:
+            self.tp_dist = new_tp
+
     def _maybe_adapt_params(self):
         if not self.adaptive_enabled or not self.use_atr:
             return
@@ -500,22 +524,7 @@ class GridStrategy:
         elif atr_current >= q_high:
             step_mult = self.adaptive_step_mult_high
 
-        new_step = atr_current * self.atr_factor * step_mult
-        min_s = self.base_step * self.min_step_mult
-        max_s = self.base_step * self.max_step_mult
-        new_step = max(min_s, min(max_s, new_step))
-        precision = max(1, int(self.digits))
-        new_step = round(new_step, precision)
-        if abs(new_step - self.step) / max(self.step, 1e-9) > self.atr_change_threshold:
-            self.step = new_step
-
-        new_tp = atr_current * self.atr_factor * step_mult
-        min_tp = self.base_tp_dist * self.min_step_mult
-        max_tp = self.base_tp_dist * self.max_step_mult
-        new_tp = max(min_tp, min(max_tp, new_tp))
-        new_tp = round(new_tp, precision)
-        if abs(new_tp - self.tp_dist) / max(self.tp_dist, 1e-9) > self.atr_change_threshold:
-            self.tp_dist = new_tp
+        self._apply_atr_targets(atr_current, step_mult=step_mult)
 
         # Lot scaling inversely to ATR, with caps.
         atr_median = float(np.median(atr_series))
@@ -703,6 +712,7 @@ class GridStrategy:
             atr_coef = 1.0
             if self.use_atr and self.base_step:
                 atr_coef = self.step / self.base_step
+            price_width = max(12, self.digits + 9)
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
                 "symbol": self.symbol,
@@ -720,7 +730,8 @@ class GridStrategy:
                 Logger.log(
                     self.symbol,
                     "ORDER_SENT",
-                    f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (queued)",
+                    f"BUY LIMIT: {price:>{price_width}.{self.digits}f} | "
+                    f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (queued)",
                 )
                 return True
             
@@ -758,7 +769,8 @@ class GridStrategy:
                             Logger.log(
                                 self.symbol,
                                 "ORDER_SENT",
-                                f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (重试)",
+                                f"BUY LIMIT: {price:>{price_width}.{self.digits}f} | "
+                                f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (重试)",
                             )
                             return result.order
 
@@ -768,7 +780,8 @@ class GridStrategy:
             Logger.log(
                 self.symbol,
                 "ORDER_SENT",
-                f"BUY LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f}",
+                f"BUY LIMIT: {price:>{price_width}.{self.digits}f} | "
+                f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f}",
             )
             return result.order
             
@@ -788,6 +801,7 @@ class GridStrategy:
             atr_coef = 1.0
             if self.use_atr and self.base_step:
                 atr_coef = self.step / self.base_step
+            price_width = max(12, self.digits + 9)
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
                 "symbol": self.symbol,
@@ -805,7 +819,8 @@ class GridStrategy:
                 Logger.log(
                     self.symbol,
                     "ORDER_SENT",
-                    f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (queued)",
+                    f"SELL LIMIT: {price:>{price_width}.{self.digits}f} | "
+                    f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (queued)",
                 )
                 return True
             
@@ -838,7 +853,8 @@ class GridStrategy:
                             Logger.log(
                                 self.symbol,
                                 "ORDER_SENT",
-                                f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (重试)",
+                                f"SELL LIMIT: {price:>{price_width}.{self.digits}f} | "
+                                f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (重试)",
                             )
                             return result.order
 
@@ -848,7 +864,8 @@ class GridStrategy:
             Logger.log(
                 self.symbol,
                 "ORDER_SENT",
-                f"SELL LIMIT: {price:>10.2f} | TP: {tp:>10.2f} | Magic: {self.magic} | ATRx {atr_coef:.2f}",
+                f"SELL LIMIT: {price:>{price_width}.{self.digits}f} | "
+                f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f}",
             )
             return result.order
             
@@ -1211,25 +1228,7 @@ class GridStrategy:
             atr_value = atr if atr is not None else self._calculate_atr()
 
         if self.use_atr and not self.adaptive_enabled and atr_value:
-            new_step = atr_value * self.atr_factor
-            min_s = self.base_step * self.min_step_mult
-            max_s = self.base_step * self.max_step_mult
-            new_step = max(min_s, min(max_s, new_step))
-            precision = max(1, int(self.digits))
-            new_step = round(new_step, precision)
-            change_ratio = abs(new_step - self.step) / max(self.step, 1e-9)
-            if change_ratio > self.atr_change_threshold:
-                self.step = new_step
-
-            new_tp = atr_value * self.atr_factor
-            min_tp = self.base_tp_dist * self.min_step_mult
-            max_tp = self.base_tp_dist * self.max_step_mult
-            new_tp = max(min_tp, min(max_tp, new_tp))
-            precision = max(1, int(self.digits))
-            new_tp = round(new_tp, precision)
-            change_ratio = abs(new_tp - self.tp_dist) / max(self.tp_dist, 1e-9)
-            if change_ratio > self.atr_change_threshold:
-                self.tp_dist = new_tp
+            self._apply_atr_targets(float(atr_value))
 
         mid_price = (tick.bid + tick.ask) / 2
         
@@ -1296,8 +1295,8 @@ class GridStrategy:
             # 更新统计数据
             self._update_stats()
             
-            price_width = 12
-            step_width = 8
+            price_width = max(12, self.digits + 8)
+            step_width = max(8, self.digits + 4)
             step_prec = max(1, int(self.digits))
             atr_coef = 1.0
             if self.use_atr and self.base_step:
@@ -1513,6 +1512,22 @@ class GridStrategy:
                 
                 if op not in target_set:
                     should_remove = True
+
+                if not should_remove and self.tp_dist > 0:
+                    expected_tp = None
+                    if o.type == mt5.ORDER_TYPE_BUY_LIMIT:
+                        expected_tp = self._normalize_price(op + self.tp_dist)
+                    elif o.type == mt5.ORDER_TYPE_SELL_LIMIT:
+                        expected_tp = self._normalize_price(op - self.tp_dist)
+
+                    if expected_tp is not None:
+                        tp_value = float(getattr(o, "tp", 0.0) or 0.0)
+                        if tp_value <= 0:
+                            should_remove = True
+                        else:
+                            tp_norm = self._normalize_price(tp_value)
+                            if tp_norm != expected_tp:
+                                should_remove = True
                 
                 # 模式过滤
                 if o.type == mt5.ORDER_TYPE_BUY_LIMIT and self.mode == "short":
@@ -1548,17 +1563,36 @@ class GridStrategy:
 
         min_dist = max(self.stop_level, self.point * 10) # 最小挂单距离
         placed_count = 0
+        placed_buy = 0
+        placed_sell = 0
+        skip_buy_exist = 0
+        skip_buy_near = 0
+        skip_buy_pos = 0
+        skip_buy_cap = 0
+        skip_buy_risk = 0
+        skip_sell_exist = 0
+        skip_sell_near = 0
+        skip_sell_pos = 0
+        skip_sell_cap = 0
+        skip_sell_risk = 0
         
         # 补买单
         for price in target_buys:
-            if placed_count >= self.max_new_orders_per_update: break
-            if price in existing_buy_prices: continue
-            if abs(price - tick.ask) < min_dist: continue
+            if placed_count >= self.max_new_orders_per_update:
+                skip_buy_cap += 1
+                break
+            if price in existing_buy_prices:
+                skip_buy_exist += 1
+                continue
+            if abs(price - tick.ask) < min_dist:
+                skip_buy_near += 1
+                continue
             
             # 检查持仓重叠：优先用网格索引集合做 O(1) 去重
             if pos_k_set:
                 k = round((price - self.anchor) / self.step)
                 if k in pos_k_set:
+                    skip_buy_pos += 1
                     continue
             else:
                 # step=0 或 anchor 未初始化时兜底：退化为 O(n) 扫描
@@ -1568,28 +1602,38 @@ class GridStrategy:
                         is_duplicate_pos = True
                         break
                 if is_duplicate_pos:
+                    skip_buy_pos += 1
                     continue
 
             if not self._allow_side("buy", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
                                     long_pos_count=long_pos_count, short_pos_count=short_pos_count):
+                skip_buy_risk += 1
                 break
 
             if self._place_buy_order(price):
                 placed_count += 1
+                placed_buy += 1
                 # 本地更新所有相关变量以便循环内即时生效
                 pending_buy_vol += self.lot
                 net_vol += self.lot
 
         # 补卖单
         for price in target_sells:
-            if placed_count >= self.max_new_orders_per_update: break
-            if price in existing_sell_prices: continue
-            if abs(price - tick.bid) < min_dist: continue
+            if placed_count >= self.max_new_orders_per_update:
+                skip_sell_cap += 1
+                break
+            if price in existing_sell_prices:
+                skip_sell_exist += 1
+                continue
+            if abs(price - tick.bid) < min_dist:
+                skip_sell_near += 1
+                continue
 
             # 检查持仓重叠：优先用网格索引集合做 O(1) 去重
             if pos_k_set:
                 k = round((price - self.anchor) / self.step)
                 if k in pos_k_set:
+                    skip_sell_pos += 1
                     continue
             else:
                 is_duplicate_pos = False
@@ -1598,14 +1642,49 @@ class GridStrategy:
                         is_duplicate_pos = True
                         break
                 if is_duplicate_pos:
+                    skip_sell_pos += 1
                     continue
 
             if not self._allow_side("sell", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
                                     long_pos_count=long_pos_count, short_pos_count=short_pos_count):
+                skip_sell_risk += 1
                 break
 
             if self._place_sell_order(price):
                 placed_count += 1
+                placed_sell += 1
                 # 本地更新所有相关变量以便循环内即时生效
                 pending_sell_vol += self.lot
                 net_vol -= self.lot
+
+        if should_log_status:
+            def _fmt_skip(label, exist, near, pos, cap, risk):
+                parts = []
+                if exist:
+                    parts.append(f"exist={exist}")
+                if near:
+                    parts.append(f"near={near}")
+                if pos:
+                    parts.append(f"pos={pos}")
+                if cap:
+                    parts.append(f"cap={cap}")
+                if risk:
+                    parts.append(f"risk={risk}")
+                if not parts:
+                    return ""
+                return f"{label}({', '.join(parts)})"
+
+            skip_sections = [
+                _fmt_skip("B", skip_buy_exist, skip_buy_near, skip_buy_pos, skip_buy_cap, skip_buy_risk),
+                _fmt_skip("S", skip_sell_exist, skip_sell_near, skip_sell_pos, skip_sell_cap, skip_sell_risk),
+            ]
+            skip_sections = [s for s in skip_sections if s]
+            if skip_sections:
+                Logger.log(
+                    self.symbol,
+                    "SKIP",
+                    f"targets B:{len(target_buys)} S:{len(target_sells)} | "
+                    f"placed B:{placed_buy} S:{placed_sell} | "
+                    f"min_dist={min_dist:.{self.digits}f} | "
+                    + " ".join(skip_sections),
+                )

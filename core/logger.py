@@ -158,6 +158,13 @@ class Logger:
 
         action_cn = action_map.get(action, action)
 
+        symbol_width = Logger._display_width(str(symbol))
+        if symbol_width > Logger._symbol_width:
+            Logger._symbol_width = symbol_width
+        action_width = Logger._display_width(str(action_cn))
+        if action_width > Logger._action_width:
+            Logger._action_width = action_width
+
         try:
             throttle_seconds = float(os.getenv("INV_LOG_THROTTLE_SECONDS", "1.5"))
         except Exception:
