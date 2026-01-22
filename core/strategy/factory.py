@@ -20,10 +20,12 @@ def _get_allowed_keys() -> Set[str]:
     return _ALLOWED_KEYS
 
 
-def build_strategy(cfg: Dict[str, Any], *, lock: Any = None) -> GridStrategy:
+def build_strategy(cfg: Dict[str, Any], *, lock: Any = None, datafeed: Any = None) -> GridStrategy:
     normalized = normalize_config(cfg)
     allowed = _get_allowed_keys()
     kwargs = {key: normalized[key] for key in allowed if key in normalized}
     if lock is not None:
         kwargs["lock"] = lock
+    if datafeed is not None:
+        kwargs["datafeed"] = datafeed
     return GridStrategy(**kwargs)

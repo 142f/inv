@@ -5,14 +5,13 @@ import MetaTrader5 as mt5
 
 from core.logger import Logger
 from core.runtime.context import StrategyContext
-from core.runtime.datafeed import DataFeed
 
 
 class Runner:
     def __init__(self, broker, strategy_manager):
         self.broker = broker
         self.strategy_manager = strategy_manager
-        self.datafeed = DataFeed(broker)
+        self.datafeed = strategy_manager.datafeed
 
     def run(self, *, cycles: int, max_seconds: float, interval: float):
         cycles = max(1, int(cycles))

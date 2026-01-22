@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Dict
 
 from core.logger import Logger
+from core.runtime.datafeed import DataFeed
 from core.strategy_lib import GridStrategy
 
 from .factory import build_strategy
@@ -12,11 +13,12 @@ from .updater import StrategyUpdater
 
 
 class StrategyManager:
-    def __init__(self, broker, config_loader):
+    def __init__(self, broker, config_loader, datafeed: DataFeed | None = None):
         self.broker = broker
         self.config_loader = config_loader
         self.active: Dict[int, GridStrategy] = {}
         self._updater = StrategyUpdater(broker)
+        self.datafeed = datafeed or DataFeed(broker)
 
     def sync(self):
         changed, configs = self.config_loader.load_if_changed()
@@ -50,9 +52,12 @@ class StrategyManager:
 
     def _add_strategy(self, cfg: dict):
         Logger.log("SYSTEM", "ADD", f"Add strategy {cfg.get('symbol')} (Magic: {cfg.get('magic')})")
-        strategy = build_strategy(cfg, lock=self.broker.lock)
+        symbol = cfg.get("symbol")
+        if not self.broker.ensure_symbol(symbol):
+            Logger.log("SYSTEM", "ERROR", f"Symbol unavailable: {symbol}")
+            return
+        strategy = build_strategy(cfg, lock=self.broker.lock, datafeed=self.datafeed)
         self.active[cfg["magic"]] = strategy
-        self.broker.ensure_symbol(cfg["symbol"])
         strategy.clear_old_orders()
 
     def _remove_strategy(self, magic: int):

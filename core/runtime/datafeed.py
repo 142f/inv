@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
 import MetaTrader5 as mt5
 import numpy as np
@@ -16,10 +16,17 @@ class _AtrState:
     last_time: float = 0.0
 
 
+@dataclass
+class _RatesState:
+    last_time: float = 0.0
+    rates: Any | None = None
+
+
 class DataFeed:
     def __init__(self, broker):
         self.broker = broker
         self._atr_cache: Dict[Tuple[str, int, int, str, float], _AtrState] = {}
+        self._rates_cache: Dict[Tuple[str, int, int], _RatesState] = {}
 
     def get_atr(
         self,
@@ -90,3 +97,35 @@ class DataFeed:
 
         state.last_time = now
         return state.last_value
+
+    def get_rates(
+        self,
+        symbol: str,
+        timeframe: int,
+        count: int,
+        *,
+        cache_seconds: float = 1.0,
+        min_ratio: float = 0.7,
+    ) -> Any:
+        key = (symbol, timeframe, int(count))
+        state = self._rates_cache.get(key)
+        if state is None:
+            state = _RatesState()
+            self._rates_cache[key] = state
+
+        now = time.time()
+        if state.rates is not None and (now - state.last_time) < float(cache_seconds):
+            return state.rates
+
+        if getattr(self.broker, "lock", None) is not None:
+            with self.broker.lock:
+                rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, int(count))
+        else:
+            rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, int(count))
+
+        if rates is None or len(rates) < int(count * float(min_ratio)):
+            return state.rates
+
+        state.rates = rates
+        state.last_time = now
+        return rates

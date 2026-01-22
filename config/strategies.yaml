@@ -65,7 +65,7 @@
   window: 3                     # 盘口挂单数量 (单边)
   min_p: 70000                  # 最小交易价格
   max_p: 1400000.0              # 最大交易价格
-  enabled: true               # 是否启用
+  enabled: false               # 是否启用
   mode: long                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
@@ -89,13 +89,13 @@
 
 - symbol: "BTCUSDc"             # 比特
   magic: 10031                   # 策略唯一ID
-  lot: 0.01                  # 交易手数
+  lot: 0.02                  # 交易手数
   step: 99                    # 网格间距
   tp_dist: 199            # 止盈距离
   window: 3                     # 盘口挂单数量 (单边)
   min_p: 70000                  # 最小交易价格
   max_p: 1400000.0              # 最大交易价格
-  enabled: false                # 是否启用
+  enabled: true                # 是否启用
   mode: short                  # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
@@ -118,9 +118,9 @@
 
 - symbol: "XAUUSDc"             # 交易品种
   magic: 1001                   # 策略唯一ID
-  lot: 0.01             # 交易手数
-  step: 2.6                       # 网格间距
-  tp_dist: 4         # 止盈距离
+  lot: 0.02             # 交易手数
+  step: 2.2                       # 网格间距
+  tp_dist: 6         # 止盈距离
   window: 3                     # 盘口挂单数量 (单边)
   min_p: 4000.0                 # 最小交易价格
   max_p: 4999            # 最大交易价格

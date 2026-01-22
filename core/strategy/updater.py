@@ -15,9 +15,38 @@ class StrategyUpdater:
     def apply(self, strategy: GridStrategy, cfg: dict):
         cfg = normalize_config(cfg)
         current_state = strategy.get_state()
+        current_state.pop("enabled", None)
+
+        atr_keys = (
+            "use_atr",
+            "atr_period",
+            "atr_factor",
+            "atr_mode",
+            "atr_timeframe",
+            "atr_update_seconds",
+            "atr_smooth",
+            "atr_change_threshold",
+            "min_step_mult",
+            "max_step_mult",
+        )
+        adaptive_keys = (
+            "adaptive_enabled",
+            "adaptive_timeframe",
+            "adaptive_lookback",
+            "adaptive_quantile_low",
+            "adaptive_quantile_high",
+            "adaptive_step_mult_low",
+            "adaptive_step_mult_high",
+            "adaptive_lot_min_mult",
+            "adaptive_lot_max_mult",
+            "adaptive_range_buffer_atr",
+        )
+        atr_before = {key: getattr(strategy, key, None) for key in atr_keys}
+        adaptive_before = {key: getattr(strategy, key, None) for key in adaptive_keys}
 
         new_symbol = cfg.get("symbol", strategy.symbol)
         if strategy.symbol != new_symbol:
+            strategy.clear_old_orders()
             self.broker.ensure_symbol(new_symbol)
             strategy.set_symbol(new_symbol, reset_runtime_state=True)
             current_state = {}
@@ -114,6 +143,14 @@ class StrategyUpdater:
         ):
             if key in cfg:
                 setattr(strategy, key, cfg[key])
+
+        atr_changed = any(getattr(strategy, key, None) != atr_before[key] for key in atr_keys)
+        adaptive_changed = any(getattr(strategy, key, None) != adaptive_before[key] for key in adaptive_keys)
+        if atr_changed:
+            strategy._last_atr_value = None
+            strategy._last_atr_time = 0.0
+        if adaptive_changed:
+            strategy._last_adapt_bar_time = 0.0
 
         # Ensure pending orders reflect latest strategy parameters.
         strategy.clear_old_orders()

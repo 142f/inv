@@ -35,6 +35,7 @@ class GridStrategy:
                  atr_update_seconds=5, atr_smooth=0.1, atr_change_threshold=0.01,
                  min_step_mult=0.5, max_step_mult=3.0,
                  lock=None,
+                 datafeed=None,
                  # --- Anchor / Recenter ---
                  anchor=None,                 # 初始anchor；None=启动时自动取
                  recenter_steps=3,            # 偏离多少个step触发再中心化
@@ -123,6 +124,7 @@ class GridStrategy:
         self.max_step_mult = max_step_mult
         
         self.lock = lock
+        self.datafeed = datafeed
         self.bid_orders = {}
         self.ask_orders = {}
         self._action_collector = None
@@ -169,8 +171,6 @@ class GridStrategy:
         self._last_hedge_entry_price = None
 
         # cache rates (减少 copy_rates 压力)
-        self._rates_cache_ts = 0.0
-        self._rates_cache = None
         
         # 内部状态变量
         self._last_atr_value = None
@@ -339,14 +339,13 @@ class GridStrategy:
             # ATR 缓存
             self._last_atr_value = None
             self._last_atr_time = 0.0
+            self._last_adapt_bar_time = 0.0
 
             # 对冲运行态
             self._last_hedge_time = 0.0
             self._last_hedge_entry_price = None
 
             # 行情缓存
-            self._rates_cache_ts = 0.0
-            self._rates_cache = None
 
     @staticmethod
     def _precision_from_step(step: float) -> int:
@@ -489,7 +488,15 @@ class GridStrategy:
         lookback = max(50, int(self.adaptive_lookback))
         timeframe = self._resolve_adaptive_timeframe()
 
-        if self.lock:
+        if self.datafeed is not None:
+            rates = self.datafeed.get_rates(
+                self.symbol,
+                timeframe,
+                lookback + 2,
+                cache_seconds=2.0,
+                min_ratio=0.7,
+            )
+        elif self.lock:
             with self.lock:
                 rates = mt5.copy_rates_from_pos(self.symbol, timeframe, 0, lookback + 2)
         else:
@@ -702,177 +709,87 @@ class GridStrategy:
                 op = self._normalize_price(o.price_open)
                 self.ask_orders.setdefault(op, []).append(o)
 
-    def _place_buy_order(self, price):
-        """内部方法：发送带止盈的买单"""
+    def _place_limit_order(self, side: str, price: float):
         try:
-            # 使用缓存的 digits
+            is_buy = side == "buy"
+            order_type = mt5.ORDER_TYPE_BUY_LIMIT if is_buy else mt5.ORDER_TYPE_SELL_LIMIT
+            label = "BUY" if is_buy else "SELL"
+
             price = self._normalize_price(price)
-            tp = self._normalize_price(price + self.tp_dist)
+            tp = self._normalize_price(price + self.tp_dist if is_buy else price - self.tp_dist)
             vol = self._normalize_volume(self.lot)
             atr_coef = 1.0
             if self.use_atr and self.base_step:
                 atr_coef = self.step / self.base_step
             price_width = max(12, self.digits + 9)
+
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
                 "symbol": self.symbol,
                 "volume": vol,
-                "type": mt5.ORDER_TYPE_BUY_LIMIT,
+                "type": order_type,
                 "price": price,
                 "tp": tp,
-                "deviation": 20,  # 允许 20 点的滑点
+                "deviation": 20,
                 "magic": self.magic,
                 "type_time": mt5.ORDER_TIME_GTC,
             }
-            
+
             if self._action_collector is not None:
                 self._queue_action(request)
                 Logger.log(
                     self.symbol,
                     "ORDER_SENT",
-                    f"BUY LIMIT: {price:>{price_width}.{self.digits}f} | "
+                    f"{label} LIMIT: {price:>{price_width}.{self.digits}f} | "
                     f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (queued)",
                 )
                 return True
-            
+
             result = self._send_with_fillings(request)
-            
             if result is None:
                 last_error = mt5.last_error()
-                Logger.log(self.symbol, "ERROR", f"下单返回 None. Error: {last_error}")
+                Logger.log(self.symbol, "ERROR", f"order_send returned None. Error: {last_error}")
                 return None
 
-            # 填充模式兼容
-            # 统一错误处理
             if result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                # 如果是价格变动 (Requote)，尝试重试一次
-                if result.retcode == 10004: # REQUOTE
-                    Logger.log(self.symbol, "WARN", "价格变动，正在重试...")
+                if result.retcode == 10004:  # REQUOTE
+                    Logger.log(self.symbol, "WARN", "Requote, retrying...")
                     time.sleep(0.1)
-                    # 重新获取价格并重试
-                    if self.lock:
-                        with self.lock:
-                            tick = mt5.symbol_info_tick(self.symbol)
-                    else:
-                        tick = mt5.symbol_info_tick(self.symbol)
-                        
-                    if tick:
-                        # 重新获取价格并重试 (这里其实应该重新计算 price，但为了简单重试原价)
-                        result = self._send_with_fillings(request)
-                        
-                        if result is None:
-                            last_error = mt5.last_error()
-                            Logger.log(self.symbol, "ERROR", f"下单返回 None (Requote重试时). Error: {last_error}")
-                            return None
-                            
-                        if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                            Logger.log(
-                                self.symbol,
-                                "ORDER_SENT",
-                                f"BUY LIMIT: {price:>{price_width}.{self.digits}f} | "
-                                f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (重试)",
-                            )
-                            return result.order
-
-                self._handle_order_error(result.retcode, result.comment, price)
-                return None
-                
-            Logger.log(
-                self.symbol,
-                "ORDER_SENT",
-                f"BUY LIMIT: {price:>{price_width}.{self.digits}f} | "
-                f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f}",
-            )
-            return result.order
-            
-        except Exception as e:
-            Logger.log(self.symbol, "EXCEPTION", f"下单异常: {str(e)}")
-            # 异常时也进行退避，避免主循环频繁调用导致刷日志/高频重试
-            self.pause_until = max(self.pause_until, time.time() + 2)
-            return None
-
-    def _place_sell_order(self, price):
-        """内部方法：发送带止盈的卖单"""
-        try:
-            # 使用缓存的 digits
-            price = self._normalize_price(price)
-            tp = self._normalize_price(price - self.tp_dist)
-            vol = self._normalize_volume(self.lot)
-            atr_coef = 1.0
-            if self.use_atr and self.base_step:
-                atr_coef = self.step / self.base_step
-            price_width = max(12, self.digits + 9)
-            request = {
-                "action": mt5.TRADE_ACTION_PENDING,
-                "symbol": self.symbol,
-                "volume": vol,
-                "type": mt5.ORDER_TYPE_SELL_LIMIT,
-                "price": price,
-                "tp": tp,
-                "deviation": 20,  # 允许 20 点的滑点
-                "magic": self.magic,
-                "type_time": mt5.ORDER_TIME_GTC,
-            }
-            
-            if self._action_collector is not None:
-                self._queue_action(request)
-                Logger.log(
-                    self.symbol,
-                    "ORDER_SENT",
-                    f"SELL LIMIT: {price:>{price_width}.{self.digits}f} | "
-                    f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (queued)",
-                )
-                return True
-            
-            result = self._send_with_fillings(request)
-            
-            if result is None:
-                last_error = mt5.last_error()
-                Logger.log(self.symbol, "ERROR", f"下单返回 None. Error: {last_error}")
-                return None
-
-            # 填充模式兼容
-            # 统一错误处理
-            if result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                # 如果是价格变动 (Requote)，尝试重试一次
-                if result.retcode == 10004: # REQUOTE
-                    Logger.log(self.symbol, "WARN", "价格变动，正在重试...")
-                    time.sleep(0.1)
-                    if self.lock:
-                        with self.lock:
-                            result = self._send_with_fillings(request)
-                    else:
-                        result = self._send_with_fillings(request)
-                    
+                    result = self._send_with_fillings(request)
                     if result is None:
                         last_error = mt5.last_error()
-                        Logger.log(self.symbol, "ERROR", f"下单返回 None (Requote重试时). Error: {last_error}")
+                        Logger.log(self.symbol, "ERROR", f"order_send returned None after requote. Error: {last_error}")
                         return None
-                        
                     if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
-                            Logger.log(
-                                self.symbol,
-                                "ORDER_SENT",
-                                f"SELL LIMIT: {price:>{price_width}.{self.digits}f} | "
-                                f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (重试)",
-                            )
-                            return result.order
+                        Logger.log(
+                            self.symbol,
+                            "ORDER_SENT",
+                            f"{label} LIMIT: {price:>{price_width}.{self.digits}f} | "
+                            f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f} (retry)",
+                        )
+                        return result.order
 
-                self._handle_order_error(result.retcode, result.comment, price)
+                self._handle_order_error(result.retcode, getattr(result, "comment", ""), price)
                 return None
-                
+
             Logger.log(
                 self.symbol,
                 "ORDER_SENT",
-                f"SELL LIMIT: {price:>{price_width}.{self.digits}f} | "
+                f"{label} LIMIT: {price:>{price_width}.{self.digits}f} | "
                 f"TP: {tp:>{price_width}.{self.digits}f} | Magic: {self.magic} | ATRx {atr_coef:.2f}",
             )
             return result.order
-            
-        except Exception as e:
-            Logger.log(self.symbol, "EXCEPTION", f"下单异常: {str(e)}")
+
+        except Exception as exc:
+            Logger.log(self.symbol, "EXCEPTION", f"order exception: {exc}")
             self.pause_until = max(self.pause_until, time.time() + 2)
             return None
+
+    def _place_buy_order(self, price):
+        return self._place_limit_order("buy", price)
+
+    def _place_sell_order(self, price):
+        return self._place_limit_order("sell", price)
 
     def _handle_order_error(self, retcode, comment, price):
         """统一处理订单错误"""
@@ -1009,21 +926,24 @@ class GridStrategy:
     # Hedge Helpers
     # ------------------------
     def _get_m1_rates_cached(self, n: int = 450, cache_sec: int = 10):
-        now = time.time()
-        if self._rates_cache is not None and (now - self._rates_cache_ts) < cache_sec:
-            return self._rates_cache
+        if self.datafeed is not None:
+            return self.datafeed.get_rates(
+                self.symbol,
+                mt5.TIMEFRAME_M1,
+                n,
+                cache_seconds=cache_sec,
+                min_ratio=0.7,
+            )
 
         if self.lock:
             with self.lock:
                 rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M1, 0, n)
         else:
             rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M1, 0, n)
-            
+
         if rates is None or len(rates) < int(n * 0.7):
             return None
 
-        self._rates_cache = rates
-        self._rates_cache_ts = now
         return rates
 
     def _quantile(self, arr, q: float):
@@ -1225,7 +1145,24 @@ class GridStrategy:
         # --- ATR adaptive step/tp ---
         atr_value = None
         if self.use_atr and not self.adaptive_enabled:
-            atr_value = atr if atr is not None else self._calculate_atr()
+            if atr is not None:
+                atr_value = atr
+                self._last_atr_value = float(atr_value)
+                self._last_atr_time = now
+            elif self.datafeed is not None:
+                atr_value = self.datafeed.get_atr(
+                    self.symbol,
+                    self._resolve_timeframe(),
+                    self.atr_period,
+                    self.atr_mode,
+                    self.atr_smooth,
+                    self.atr_update_seconds,
+                )
+                if atr_value is not None:
+                    self._last_atr_value = float(atr_value)
+                    self._last_atr_time = now
+            else:
+                atr_value = self._calculate_atr()
 
         if self.use_atr and not self.adaptive_enabled and atr_value:
             self._apply_atr_targets(float(atr_value))
