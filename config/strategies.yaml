@@ -2,10 +2,10 @@
 # ????????????????????
 - symbol: "USDJPYc"             # 美日
   magic: 1002                   # 策略唯一ID
-  lot: 0.08                     # 交易手数
-  step: 0.09                  # 网格间距
-  tp_dist: 0.11               # 止盈距离
-  window: 5                     # 盘口挂单数量 (单边)
+  lot: 0.06                     # 交易手数
+  step: 0.1                  # 网格间距
+  tp_dist: 0.115               # 止盈距离
+  window: 4                     # 盘口挂单数量 (单边)
   min_p: 150                    # 最小交易价格
   max_p: 170                    # 最大交易价格
   enabled: true                 # 是否启用
@@ -30,10 +30,10 @@
 
 - symbol: "EURUSDc"             # 欧美
   magic: 1008                   # 策略唯一ID
-  lot: 0.1                     # 交易手数
-  step: 0.001                 # 网格间距
-  tp_dist: 0.0013               # 止盈距离
-  window: 5                     # 盘口挂单数量 (单边)
+  lot: 0.08                     # 交易手数
+  step: 0.00075                 # 网格间距
+  tp_dist: 0.00095               # 止盈距离
+  window: 4                     # 盘口挂单数量 (单边)
   min_p: 0.9                    # 最小交易价格
   max_p: 1.5                    # 最大交易价格
   enabled: true                 # 是否启用
@@ -60,9 +60,9 @@
 - symbol: "BTCUSDc"             # 比特
   magic: 1003                   # 策略唯一ID
   lot: 0.01                    # 交易手数
-  step: 333                    # 网格间距
-  tp_dist: 300               # 止盈距离
-  window: 5                     # 盘口挂单数量 (单边)
+  step: 99                    # 网格间距
+  tp_dist: 299            # 止盈距离
+  window: 4                     # 盘口挂单数量 (单边)
   min_p: 70000                  # 最小交易价格
   max_p: 1400000.0              # 最大交易价格
   enabled: true               # 是否启用
@@ -92,7 +92,7 @@
   lot: 0.02                  # 交易手数
   step: 99                    # 网格间距
   tp_dist: 199            # 止盈距离
-  window: 5                     # 盘口挂单数量 (单边)
+  window: 4                     # 盘口挂单数量 (单边)
   min_p: 70000                  # 最小交易价格
   max_p: 1400000.0              # 最大交易价格
   enabled: false                # 是否启用
@@ -121,7 +121,7 @@
   lot: 0.02             # 交易手数
   step: 2.3                       # 网格间距
   tp_dist: 6.5         # 止盈距离
-  window: 5                     # 盘口挂单数量 (单边)
+  window: 4                     # 盘口挂单数量 (单边)
   min_p: 4000.0                 # 最小交易价格
   max_p: 5222            # 最大交易价格
   enabled: true                 # 是否启用

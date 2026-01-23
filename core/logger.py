@@ -91,7 +91,7 @@ class Logger:
                 if cls._enable_console:
                     console_handler = logging.StreamHandler(sys.stdout)
                     console_format = _MessageFormatter(
-                        "console_msg", "%(asctime)s | %(message)s", datefmt="%H:%M:%S"
+                        "console_msg", "%(asctime)s.%(msecs)03d | %(message)s", datefmt="%H:%M:%S"
                     )
                     console_handler.setFormatter(console_format)
                     handlers.append(console_handler)
@@ -102,7 +102,7 @@ class Logger:
                     LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
                 )
                 file_format = _MessageFormatter(
-                    "file_msg", "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+                    "file_msg", "%(asctime)s.%(msecs)03d | %(levelname)-8s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
                 )
                 file_handler.setFormatter(file_format)
                 handlers.append(file_handler)

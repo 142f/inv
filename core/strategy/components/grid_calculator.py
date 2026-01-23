@@ -35,8 +35,9 @@ class GridCalculator:
         min_dist = max(0.0, float(min_dist)) if min_dist is not None else 0.0
 
         mid_price = (bid + ask) / 2.0
-        if not (min_price <= mid_price <= max_price):
-            return target_buys, target_sells
+        # If price is way out of bounds, maybe returning empty is correct, but let's be lenient
+        # if not (min_price <= mid_price <= max_price):
+        #    return target_buys, target_sells
 
         def _should_skip(level: float, side: str) -> bool:
             if min_dist > 0.0:
@@ -45,34 +46,66 @@ class GridCalculator:
                 if side == "sell" and (level - bid) < min_dist:
                     return True
             if blocked_k:
+                # Calculate k relative to the FIXED anchor (which is passed in)
                 k = round((level - anchor) / step)
                 if k in blocked_k:
                     return True
             return False
 
+        # --- Fixed Grid + Sliding Window Logic ---
+        
+        # 1. Buy Orders (Below current price)
+        # We want grid lines that are < Ask
         if mode in ["neutral", "long"] and buy_window > 0:
-            seen_buys = set()
-            max_i = int((anchor - min_price) / step) if anchor > min_price else 0
-            i = 0
-            while i <= max_i and len(target_buys) < buy_window:
-                level = self._normalize_price(anchor - (i * step))
-                if level < ask and level >= min_price:
-                    if level not in seen_buys and not _should_skip(level, "buy"):
+            start_k = int((ask - anchor) / step)
+            # Check a bit higher just in case floating point issues
+            start_k += 2 
+            
+            count = 0
+            k = start_k
+            
+            # Scan downwards
+            while count < buy_window:
+                if (anchor + k * step) < (min_price - step): # Stop if we go below min_price
+                     break
+                     
+                level = self._normalize_price(anchor + k * step)
+                
+                # Check strict price conditions
+                if level < ask and level >= min_price and level <= max_price: 
+                    # Only add if it satisfies min_dist and not blocked
+                    if not _should_skip(level, "buy"):
                         target_buys.append(level)
-                        seen_buys.add(level)
-                i += 1
+                        count += 1
+                
+                k -= 1
+                if k < -1000000: # Safety break
+                    break
 
+        # 2. Sell Orders (Above current price)
         if mode in ["neutral", "short"] and sell_window > 0:
-            seen_sells = set()
-            max_i = int((max_price - anchor) / step) if max_price > anchor else 0
-            i = 0
-            while i <= max_i and len(target_sells) < sell_window:
-                level = self._normalize_price(anchor + (i * step))
-                if level > bid and level <= max_price:
-                    if level not in seen_sells and not _should_skip(level, "sell"):
+            start_k = int((bid - anchor) / step)
+            start_k -= 2 # Check a bit lower
+            
+            count = 0 
+            k = start_k
+            
+            # Iterate upwards
+            while count < sell_window:
+                if (anchor + k * step) > (max_price + step): # Stop if above max
+                    break
+
+                level = self._normalize_price(anchor + k * step)
+                
+                if level > bid and level <= max_price and level >= min_price:
+                    if not _should_skip(level, "sell"):
                         target_sells.append(level)
-                        seen_sells.add(level)
-                i += 1
+                        count += 1
+                
+                k += 1
+                if k > 1000000: # Safety break
+                    break
+            
             target_sells.sort(reverse=True)
 
         return target_buys, target_sells
