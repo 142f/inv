@@ -149,6 +149,7 @@ class Logger:
             "REMOVE": "移除策略",
             "START": "系统启动",
             "ORDER_FAIL": "下单失败",
+            "ORDER_CHECK": "挂单检查",
             "EXCEPTION": "未知异常",
             "TRIM": "修剪挂单",
             "STATUS": "状态巡检",

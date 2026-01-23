@@ -21,6 +21,7 @@ class GridStrategy:
         "H4": mt5.TIMEFRAME_H4,
         "D1": mt5.TIMEFRAME_D1,
     }
+    _VALID_MODES = {"neutral", "long", "short"}
 
     def __init__(self, symbol, step, tp_dist, lot, magic, 
                  window=6, min_p=0, max_p=999999, enabled=True, 
@@ -111,7 +112,7 @@ class GridStrategy:
         self.adaptive_range_buffer_atr = float(adaptive_range_buffer_atr)
         
         # 新增参数
-        self.mode = mode
+        self.mode = self._normalize_mode(mode)
         self.buy_window = buy_window if buy_window is not None else window
         self.sell_window = sell_window if sell_window is not None else window
         self.out_of_range_action = out_of_range_action
@@ -202,6 +203,13 @@ class GridStrategy:
         
         # [优化] 缓存静态 Symbol 信息
         self._cache_symbol_info()
+
+    def _normalize_mode(self, mode):
+        normalized = str(mode or "neutral").strip().lower()
+        if normalized not in self._VALID_MODES:
+            Logger.log(self.symbol, "WARN", f"Invalid mode '{mode}', fallback to neutral")
+            return "neutral"
+        return normalized
 
     def get_state(self):
         """获取策略内部状态，用于配置同步时保持状态"""
@@ -661,14 +669,16 @@ class GridStrategy:
         self._last_atr_time = current_time
         return self._last_atr_value
 
+    def _get_tick(self):
+        if self.lock:
+            with self.lock:
+                return mt5.symbol_info_tick(self.symbol)
+        return mt5.symbol_info_tick(self.symbol)
+
     def _is_market_open(self, tick=None):
         """检查市场是否开放 (基于 Tick 时间)"""
         if tick is None:
-            if self.lock:
-                with self.lock:
-                    tick = mt5.symbol_info_tick(self.symbol)
-            else:
-                tick = mt5.symbol_info_tick(self.symbol)
+            tick = self._get_tick()
                 
         if not tick: return False
         # 如果最后一次 Tick 距离现在超过 10 分钟 (600秒)，认为休市
@@ -716,6 +726,35 @@ class GridStrategy:
                 return mt5.order_send(request)
         return mt5.order_send(request)
 
+    def _order_check(self, request):
+        request = self._prepare_request(request)
+        if request is None:
+            return None
+        try:
+            if self.lock:
+                with self.lock:
+                    result = mt5.order_check(request)
+            else:
+                result = mt5.order_check(request)
+        except Exception as exc:
+            Logger.log(self.symbol, "ERROR", f"order_check exception: {exc}")
+            return None
+
+        if result is None:
+            last_error = mt5.last_error()
+            Logger.log(self.symbol, "ERROR", f"order_check returned None. Error: {last_error}")
+            return None
+
+        retcode = getattr(result, "retcode", None)
+        comment = getattr(result, "comment", "") or ""
+        msg = (
+            f"RC: {retcode} | {comment} | "
+            f"type={request.get('type')} price={request.get('price')} "
+            f"vol={request.get('volume')} fill={request.get('type_filling', '')}"
+        )
+        Logger.log(self.symbol, "ORDER_CHECK", msg)
+        return result
+
     def _send_with_fillings(self, request):
         candidates = []
         default = self.filling_mode
@@ -734,12 +773,14 @@ class GridStrategy:
         for mode in candidates:
             req = dict(request)
             req['type_filling'] = mode
+            self._order_check(req)
             last_result = self._dispatch_request(req)
             if last_result is None:
                 return None
             if last_result.retcode != 10030:
                 return last_result
 
+        self._order_check(request)
         return self._dispatch_request(request)
 
     def _index_orders(self, my_orders):
@@ -933,12 +974,10 @@ class GridStrategy:
         cap = float(self.max_net_vol)
 
         if self.mode == "neutral":
-            if side == "buy":
-                # adding buy increases net
-                return abs(net_vol + lot) <= cap
-            else:
-                # adding sell decreases net
-                return abs(net_vol - lot) <= cap
+            new_net = net_vol + lot if side == "buy" else net_vol - lot
+            if abs(net_vol) > cap + 1e-9:
+                return abs(new_net) + 1e-12 < abs(net_vol)
+            return abs(new_net) <= cap + 1e-9
 
         if self.mode == "long":
             # cap long exposure
@@ -1033,11 +1072,7 @@ class GridStrategy:
 
     def _open_hedge_sell(self, vol, tick=None):
         if tick is None:
-            if self.lock:
-                with self.lock:
-                    tick = mt5.symbol_info_tick(self.symbol)
-            else:
-                tick = mt5.symbol_info_tick(self.symbol)
+            tick = self._get_tick()
 
         if tick is None:
             return None
@@ -1060,11 +1095,7 @@ class GridStrategy:
 
     def _close_sell_position(self, pos_ticket, vol, tick=None):
         if tick is None:
-            if self.lock:
-                with self.lock:
-                    tick = mt5.symbol_info_tick(self.symbol)
-            else:
-                tick = mt5.symbol_info_tick(self.symbol)
+            tick = self._get_tick()
 
         if tick is None:
             return None
@@ -1088,11 +1119,7 @@ class GridStrategy:
 
     def _move_sell_sl_to_breakeven(self, pos, tick=None):
         if tick is None:
-            if self.lock:
-                with self.lock:
-                    tick = mt5.symbol_info_tick(self.symbol)
-            else:
-                tick = mt5.symbol_info_tick(self.symbol)
+            tick = self._get_tick()
 
         if tick is None:
             return None
@@ -1154,11 +1181,7 @@ class GridStrategy:
 
         # 获取一次 tick，后续复用（Runner 可传入 tick，减少重复的 MT5 调用）
         if tick is None:
-            if self.lock:
-                with self.lock:
-                    tick = mt5.symbol_info_tick(self.symbol)
-            else:
-                tick = mt5.symbol_info_tick(self.symbol)
+            tick = self._get_tick()
             
             
         if not tick or tick.bid <= 0: 
@@ -1235,12 +1258,11 @@ class GridStrategy:
 
         # 1. 获取当前属于本实例的挂单和持仓
         if orders_list is not None:
-            orders = orders_list
             if orders_filtered:
-                my_orders = orders
+                my_orders = orders_list
             else:
                 # 过滤属于本策略的订单 (增加 symbol 过滤)
-                my_orders = [o for o in orders if o.magic == self.magic and o.symbol == self.symbol]
+                my_orders = [o for o in orders_list if o.magic == self.magic and o.symbol == self.symbol]
         else:
             if self.lock:
                 with self.lock:
@@ -1251,12 +1273,11 @@ class GridStrategy:
         
         # 1.5 获取持仓
         if positions_list is not None:
-            positions = positions_list
             if positions_filtered:
-                my_positions = positions
+                my_positions = positions_list
             else:
                 # 过滤属于本策略的持仓 (增加 symbol 过滤)
-                my_positions = [p for p in positions if p.symbol == self.symbol and p.magic == self.magic]
+                my_positions = [p for p in positions_list if p.symbol == self.symbol and p.magic == self.magic]
         else:
             if self.lock:
                 with self.lock:
@@ -1391,7 +1412,13 @@ class GridStrategy:
                         )
         # ========== END HEDGE MANAGER ==========
 
-        existing_positions_prices = {self._normalize_price(p.price_open) for p in my_positions}
+        positions_for_block = my_positions
+        if self.mode == "long":
+            positions_for_block = [p for p in my_positions if p.type == mt5.POSITION_TYPE_BUY]
+        elif self.mode == "short":
+            positions_for_block = [p for p in my_positions if p.type == mt5.POSITION_TYPE_SELL]
+
+        existing_positions_prices = {self._normalize_price(p.price_open) for p in positions_for_block}
         pos_k_set = set()
         if self.step > 0 and self.anchor is not None:
             pos_k_set = {round((p_price - self.anchor) / self.step) for p_price in existing_positions_prices}
@@ -1399,9 +1426,6 @@ class GridStrategy:
         min_dist = max(self.stop_level, self.point * 10) # 最小挂单距离
 
         # 2. 生成目标网格层级 (围绕 Anchor 固定生成)
-        target_buys = []
-        target_sells = []
-
         target_buys, target_sells = self.grid_calculator.build_targets(
             anchor=self.anchor,
             step=self.step,
@@ -1506,6 +1530,7 @@ class GridStrategy:
         
         # A. TRIM (清理多余/超界挂单)
         target_set = set(target_buys + target_sells)
+        removed_tickets = set()
         for o in list(my_orders):
             if o.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT):
                 op = self._normalize_price(o.price_open)
@@ -1537,12 +1562,18 @@ class GridStrategy:
                     should_remove = True
 
                 if should_remove:
+                    res = None
                     if self.lock:
                         with self.lock:
-                            self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                            res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                     else:
-                        self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                        res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                    if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+                        removed_tickets.add(o.ticket)
                     # Logger.log(self.symbol, "TRIM", f"撤单: {op}")
+        if removed_tickets:
+            my_orders = [o for o in my_orders if o.ticket not in removed_tickets]
+            self._index_orders(my_orders)
 
         # B. 补单 (带库存风控)
         
@@ -1552,6 +1583,21 @@ class GridStrategy:
         # 统计持仓数量（用于 max_long_pos / max_short_pos 检查）
         long_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_BUY)
         short_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_SELL)
+
+        mode_conflict = False
+        if self.mode == "long":
+            if (not self.hedge_enabled) and short_pos_count > 0:
+                mode_conflict = True
+        elif self.mode == "short":
+            if long_pos_count > 0:
+                mode_conflict = True
+
+        if mode_conflict and should_log_status:
+            Logger.log(
+                self.symbol,
+                "WARN",
+                f"mode={self.mode} with opposite positions; skip new orders",
+            )
 
         existing_buy_prices = set(self.bid_orders.keys())
         existing_sell_prices = set(self.ask_orders.keys())
@@ -1569,86 +1615,87 @@ class GridStrategy:
         skip_sell_cap = 0
         skip_sell_risk = 0
         
-        # 补买单
-        for price in target_buys:
-            if placed_count >= self.max_new_orders_per_update:
-                skip_buy_cap += 1
-                break
-            if price in existing_buy_prices:
-                skip_buy_exist += 1
-                continue
-            if abs(price - tick.ask) < min_dist:
-                skip_buy_near += 1
-                continue
-            
-            # 检查持仓重叠：优先用网格索引集合做 O(1) 去重
-            if pos_k_set:
-                k = round((price - self.anchor) / self.step)
-                if k in pos_k_set:
-                    skip_buy_pos += 1
+        if not mode_conflict:
+            # 补买单
+            for price in target_buys:
+                if placed_count >= self.max_new_orders_per_update:
+                    skip_buy_cap += 1
+                    break
+                if price in existing_buy_prices:
+                    skip_buy_exist += 1
                     continue
-            else:
-                # step=0 或 anchor 未初始化时兜底：退化为 O(n) 扫描
-                is_duplicate_pos = False
-                for p_price in existing_positions_prices:
-                    if abs(p_price - price) < (self.step * 0.1):
-                        is_duplicate_pos = True
-                        break
-                if is_duplicate_pos:
-                    skip_buy_pos += 1
+                if abs(price - tick.ask) < min_dist:
+                    skip_buy_near += 1
                     continue
+                
+                # 检查持仓重叠：优先用网格索引集合做 O(1) 去重
+                if pos_k_set:
+                    k = round((price - self.anchor) / self.step)
+                    if k in pos_k_set:
+                        skip_buy_pos += 1
+                        continue
+                else:
+                    # step=0 或 anchor 未初始化时兜底：退化为 O(n) 扫描
+                    is_duplicate_pos = False
+                    for p_price in existing_positions_prices:
+                        if abs(p_price - price) < (self.step * 0.1):
+                            is_duplicate_pos = True
+                            break
+                    if is_duplicate_pos:
+                        skip_buy_pos += 1
+                        continue
 
-            if not self._allow_side("buy", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
-                                    long_pos_count=long_pos_count, short_pos_count=short_pos_count):
-                skip_buy_risk += 1
-                break
+                if not self._allow_side("buy", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
+                                        long_pos_count=long_pos_count, short_pos_count=short_pos_count):
+                    skip_buy_risk += 1
+                    break
 
-            if self._place_buy_order(price):
-                placed_count += 1
-                placed_buy += 1
-                # 本地更新所有相关变量以便循环内即时生效
-                pending_buy_vol += self.lot
-                net_vol += self.lot
+                if self._place_buy_order(price):
+                    placed_count += 1
+                    placed_buy += 1
+                    # 本地更新所有相关变量以便循环内即时生效
+                    pending_buy_vol += self.lot
+                    net_vol += self.lot
 
-        # 补卖单
-        for price in target_sells:
-            if placed_count >= self.max_new_orders_per_update:
-                skip_sell_cap += 1
-                break
-            if price in existing_sell_prices:
-                skip_sell_exist += 1
-                continue
-            if abs(price - tick.bid) < min_dist:
-                skip_sell_near += 1
-                continue
-
-            # 检查持仓重叠：优先用网格索引集合做 O(1) 去重
-            if pos_k_set:
-                k = round((price - self.anchor) / self.step)
-                if k in pos_k_set:
-                    skip_sell_pos += 1
+            # 补卖单
+            for price in target_sells:
+                if placed_count >= self.max_new_orders_per_update:
+                    skip_sell_cap += 1
+                    break
+                if price in existing_sell_prices:
+                    skip_sell_exist += 1
                     continue
-            else:
-                is_duplicate_pos = False
-                for p_price in existing_positions_prices:
-                    if abs(p_price - price) < (self.step * 0.1):
-                        is_duplicate_pos = True
-                        break
-                if is_duplicate_pos:
-                    skip_sell_pos += 1
+                if abs(price - tick.bid) < min_dist:
+                    skip_sell_near += 1
                     continue
 
-            if not self._allow_side("sell", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
-                                    long_pos_count=long_pos_count, short_pos_count=short_pos_count):
-                skip_sell_risk += 1
-                break
+                # 检查持仓重叠：优先用网格索引集合做 O(1) 去重
+                if pos_k_set:
+                    k = round((price - self.anchor) / self.step)
+                    if k in pos_k_set:
+                        skip_sell_pos += 1
+                        continue
+                else:
+                    is_duplicate_pos = False
+                    for p_price in existing_positions_prices:
+                        if abs(p_price - price) < (self.step * 0.1):
+                            is_duplicate_pos = True
+                            break
+                    if is_duplicate_pos:
+                        skip_sell_pos += 1
+                        continue
 
-            if self._place_sell_order(price):
-                placed_count += 1
-                placed_sell += 1
-                # 本地更新所有相关变量以便循环内即时生效
-                pending_sell_vol += self.lot
-                net_vol -= self.lot
+                if not self._allow_side("sell", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
+                                        long_pos_count=long_pos_count, short_pos_count=short_pos_count):
+                    skip_sell_risk += 1
+                    break
+
+                if self._place_sell_order(price):
+                    placed_count += 1
+                    placed_sell += 1
+                    # 本地更新所有相关变量以便循环内即时生效
+                    pending_sell_vol += self.lot
+                    net_vol -= self.lot
 
         if should_log_status:
             def _fmt_skip(label, exist, near, pos, cap, risk):

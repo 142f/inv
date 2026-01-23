@@ -137,8 +137,10 @@ class StrategyUpdater:
         ):
             if key in cfg:
                 value = cfg[key]
+                if key == "mode":
+                    value = strategy._normalize_mode(value)
                 # 对数值类型字段进行类型转换，防止字符串类型导致比较错误
-                if key in ("recenter_steps", "max_long_pos", "max_short_pos", "max_new_orders_per_update"):
+                elif key in ("recenter_steps", "max_long_pos", "max_short_pos", "max_new_orders_per_update"):
                     value = int(value) if value is not None else None
                 elif key in ("recenter_cooldown", "max_long_vol", "max_short_vol", "max_net_vol",
                              "max_spread_points", "extreme_cooldown"):
