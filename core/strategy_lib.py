@@ -1391,6 +1391,13 @@ class GridStrategy:
                         )
         # ========== END HEDGE MANAGER ==========
 
+        existing_positions_prices = {self._normalize_price(p.price_open) for p in my_positions}
+        pos_k_set = set()
+        if self.step > 0 and self.anchor is not None:
+            pos_k_set = {round((p_price - self.anchor) / self.step) for p_price in existing_positions_prices}
+
+        min_dist = max(self.stop_level, self.point * 10) # 最小挂单距离
+
         # 2. 生成目标网格层级 (围绕 Anchor 固定生成)
         target_buys = []
         target_sells = []
@@ -1406,6 +1413,8 @@ class GridStrategy:
             sell_window=self.sell_window,
             mode=self.mode,
             recenter_steps=self.recenter_steps,
+            min_dist=min_dist,
+            blocked_k=pos_k_set,
         )
 
         if should_log_status and self.max_net_vol is not None and self.lot > 0:
@@ -1546,14 +1555,6 @@ class GridStrategy:
 
         existing_buy_prices = set(self.bid_orders.keys())
         existing_sell_prices = set(self.ask_orders.keys())
-        existing_positions_prices = {self._normalize_price(p.price_open) for p in my_positions}
-        # 将持仓价格映射为网格索引：避免每个目标价都 O(n) 扫描持仓
-        pos_k_set = set()
-        if self.step > 0 and self.anchor is not None:
-            pos_k_set = {round((p_price - self.anchor) / self.step) for p_price in existing_positions_prices}
-
-
-        min_dist = max(self.stop_level, self.point * 10) # 最小挂单距离
         placed_count = 0
         placed_buy = 0
         placed_sell = 0
