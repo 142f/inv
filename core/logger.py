@@ -36,6 +36,9 @@ class Logger:
     _action_width = 8
     _listener = None
     _queue = None
+    _aggregate_actions = {"SKIP"}
+    _aggregate_interval = None
+    _aggregate_buffer = {}
 
     @staticmethod
     def _display_width(text: str) -> int:
@@ -112,6 +115,12 @@ class Logger:
                 cls._listener.start()
                 atexit.register(cls._stop_listener)
 
+            if cls._aggregate_interval is None:
+                try:
+                    cls._aggregate_interval = float(os.getenv("INV_LOG_AGG_SECONDS", "10"))
+                except Exception:
+                    cls._aggregate_interval = 0.0
+
     @classmethod
     def _stop_listener(cls):
         if cls._listener:
@@ -127,6 +136,7 @@ class Logger:
             "ORDER_SENT": "下单成功",
             "RM_FAR": "清理远单",
             "WINDOW_LIMIT": "窗口限制",
+            "CONFIG_ERROR": "配置错误",
             "WARN": "系统警告",
             "ERROR": "运行错误",
             "CRITICAL": "严重错误",
@@ -156,6 +166,24 @@ class Logger:
             "HEDGE_EXIT": "对冲平仓",
         }
 
+        action_level_map = {
+            "DEBUG": "debug",
+            "WARN": "warning",
+            "HALT": "warning",
+            "SLEEP": "warning",
+            "FUSE": "warning",
+            "ERROR": "error",
+            "EXCEPTION": "error",
+            "ORDER_FAIL": "error",
+            "CONFIG_ERROR": "error",
+            "CRITICAL": "critical",
+        }
+
+        level_str = str(level) if level is not None else "info"
+        if level_str.lower() == "info" and action in action_level_map:
+            level_str = action_level_map[action]
+        level = level_str
+
         action_cn = action_map.get(action, action)
 
         symbol_width = Logger._display_width(str(symbol))
@@ -169,6 +197,26 @@ class Logger:
             throttle_seconds = float(os.getenv("INV_LOG_THROTTLE_SECONDS", "1.5"))
         except Exception:
             throttle_seconds = 1.5
+
+        if Logger._aggregate_interval and action in Logger._aggregate_actions:
+            now = time.monotonic()
+            key = (str(symbol), str(action))
+            entry = Logger._aggregate_buffer.get(key)
+            if entry is None:
+                Logger._aggregate_buffer[key] = {
+                    "count": 0,
+                    "last_message": message,
+                    "last_emit": now,
+                }
+            else:
+                entry["count"] += 1
+                entry["last_message"] = message
+                if (now - entry["last_emit"]) < Logger._aggregate_interval:
+                    return
+                if entry["count"] > 0:
+                    message = f"{entry['count']}x | last: {entry['last_message']}"
+                    entry["count"] = 0
+                entry["last_emit"] = now
 
         noisy_actions = {
             "FILL_GRID",
@@ -197,9 +245,10 @@ class Logger:
         file_msg = f"{symbol_pad} | [{action_pad}] | {message}"
 
         color = Colors.RESET
-        if level.upper() == "ERROR" or action in {"ERROR", "EXCEPTION", "CRITICAL", "ORDER_FAIL"}:
+        level_upper = str(level).upper()
+        if level_upper == "ERROR" or action in {"ERROR", "EXCEPTION", "CRITICAL", "ORDER_FAIL"}:
             color = Colors.RED
-        elif level.upper() == "WARN" or action in {"WARN", "HALT", "SLEEP"}:
+        elif level_upper in {"WARN", "WARNING"} or action in {"WARN", "HALT", "SLEEP"}:
             color = Colors.YELLOW
         elif action in {"ORDER_SENT", "ADD", "START", "RELOAD"}:
             color = Colors.GREEN

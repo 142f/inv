@@ -19,6 +19,7 @@ class StrategyUpdater:
         cleared_orders = False
 
         before = {
+            "symbol": strategy.symbol,
             "enabled": strategy.enabled,
             "step": strategy.step,
             "tp_dist": strategy.tp_dist,
@@ -65,7 +66,11 @@ class StrategyUpdater:
             self.broker.ensure_symbol(new_symbol)
             strategy.set_symbol(new_symbol, reset_runtime_state=True)
             current_state = {}
-            Logger.log("SYSTEM", "UPDATE", f"Strategy {strategy.magic} symbol -> {strategy.symbol}")
+            Logger.log(
+                "SYSTEM",
+                "UPDATE",
+                f"Strategy {strategy.magic} symbol: {before['symbol']} -> {strategy.symbol}",
+            )
 
         if "enabled" in cfg:
             strategy.enabled = bool(cfg["enabled"])
@@ -188,4 +193,9 @@ class StrategyUpdater:
             strategy.clear_old_orders()
 
         strategy.set_state(current_state)
-        Logger.log("SYSTEM", "UPDATE", f"Strategy updated: {strategy.symbol} (Enabled: {strategy.enabled})")
+        Logger.log(
+            "SYSTEM",
+            "UPDATE",
+            f"Strategy updated: {strategy.symbol} (Magic: {strategy.magic}, Enabled: {strategy.enabled}, "
+            f"OrdersCleared: {should_clear_orders})",
+        )

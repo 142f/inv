@@ -1286,6 +1286,7 @@ class GridStrategy:
             if self.use_atr and self.base_step:
                 atr_coef = self.step / self.base_step
             status_msg = (
+                f"magic={self.magic} | "
                 f"PRICE {tick.bid:>{price_width}.{self.digits}f}/{tick.ask:>{price_width}.{self.digits}f} | "
                 f"POS {len(my_positions):>2} {pos_vol:>6.2f} PNL {float_profit:>10.2f} | "
                 f"ORD B:{buy_orders:>2} S:{sell_orders:<2} | "
@@ -1359,10 +1360,13 @@ class GridStrategy:
                             if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                                 self._last_hedge_time = now
                                 self._last_hedge_entry_price = mid
-                                Logger.log(self.symbol, "HEDGE_ADD",
-                                           f"add={vol_to_add:>6.2f} short={short_vol:>6.2f}/{hedge_target:<6.2f} "
-                                           f"net={net_vol:>6.2f}/{cap:<6.2f} vol={vol_cur:>6.3f}>={vol_thr:<6.3f} "
-                                           f"tv={v_cur:>6.1f}>={self.hedge_vol_mult}*{v_base:<6.1f}")
+                                Logger.log(
+                                    self.symbol,
+                                    "HEDGE_ADD",
+                                    f"magic={self.magic} | add={vol_to_add:>6.2f} short={short_vol:>6.2f}/{hedge_target:<6.2f} "
+                                    f"net={net_vol:>6.2f}/{cap:<6.2f} vol={vol_cur:>6.3f}>={vol_thr:<6.3f} "
+                                    f"tv={v_cur:>6.1f}>={self.hedge_vol_mult}*{v_base:<6.1f}",
+                                )
 
             # --- (D) 反弹/回安全区：分段退出一段 ---
             safe_net = cap * (1.0 - self.hedge_fraction)  # 例如 cap=1.5 => 1.0
@@ -1379,8 +1383,12 @@ class GridStrategy:
                     res = self._close_sell_position(pos.ticket, vol_to_close, tick=tick)
                     if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                         self._last_hedge_time = now
-                        Logger.log(self.symbol, "HEDGE_EXIT",
-                                   f"close={vol_to_close:>6.2f} net={net_vol:>6.2f} safe={safe_net:<6.2f} rebound={rebound}")
+                        Logger.log(
+                            self.symbol,
+                            "HEDGE_EXIT",
+                            f"magic={self.magic} | close={vol_to_close:>6.2f} net={net_vol:>6.2f} "
+                            f"safe={safe_net:<6.2f} rebound={rebound}",
+                        )
         # ========== END HEDGE MANAGER ==========
 
         # 2. 生成目标网格层级 (围绕 Anchor 固定生成)
@@ -1482,7 +1490,7 @@ class GridStrategy:
                 _cap_cell("备注:", remark_str, 10),
             ]
 
-            cap_msg = "CAP | " + " | ".join(cells)
+            cap_msg = f"magic={self.magic} | CAP | " + " | ".join(cells)
             Logger.log(self.symbol, "STATUS", cap_msg)
         
         # 3. 挂单维护逻辑
@@ -1667,7 +1675,7 @@ class GridStrategy:
                 Logger.log(
                     self.symbol,
                     "SKIP",
-                    f"targets B:{len(target_buys)} S:{len(target_sells)} | "
+                    f"magic={self.magic} | targets B:{len(target_buys)} S:{len(target_sells)} | "
                     f"placed B:{placed_buy} S:{placed_sell} | "
                     f"min_dist={min_dist:.{self.digits}f} | "
                     + " ".join(skip_sections),

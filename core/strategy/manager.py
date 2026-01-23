@@ -26,11 +26,15 @@ class StrategyManager:
             return
 
         if configs is None:
-            Logger.log("SYSTEM", "WARN", "Config load returned None.")
+            Logger.log("SYSTEM", "WARN", f"Config load returned None: {self.config_loader.config_path}")
             return
 
         if not configs:
-            Logger.log("SYSTEM", "WARN", "Config file is empty or has no valid strategies.")
+            Logger.log(
+                "SYSTEM",
+                "WARN",
+                f"Config file is empty or has no valid strategies: {self.config_loader.config_path}",
+            )
             return
 
         new_magics = [cfg.get("magic") for cfg in configs if isinstance(cfg, dict)]
@@ -51,7 +55,11 @@ class StrategyManager:
                 self._remove_strategy(magic)
 
     def _add_strategy(self, cfg: dict):
-        Logger.log("SYSTEM", "ADD", f"Add strategy {cfg.get('symbol')} (Magic: {cfg.get('magic')})")
+        Logger.log(
+            "SYSTEM",
+            "ADD",
+            f"Add strategy {cfg.get('symbol')} (Magic: {cfg.get('magic')}, Enabled: {cfg.get('enabled', True)})",
+        )
         symbol = cfg.get("symbol")
         if not self.broker.ensure_symbol(symbol):
             Logger.log("SYSTEM", "ERROR", f"Symbol unavailable: {symbol}")
@@ -64,5 +72,5 @@ class StrategyManager:
         strategy = self.active.pop(magic, None)
         if not strategy:
             return
-        Logger.log("SYSTEM", "REMOVE", f"Remove strategy (Magic: {magic})")
+        Logger.log("SYSTEM", "REMOVE", f"Remove strategy {strategy.symbol} (Magic: {magic})")
         strategy.clear_old_orders()

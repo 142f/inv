@@ -51,11 +51,11 @@ class ConfigLoader:
             with open(self.config_path, "r", encoding="utf-8") as fh:
                 data = yaml.safe_load(fh) or []
         except Exception as exc:
-            Logger.log("SYSTEM", "ERROR", f"Failed to read config: {exc}")
+            Logger.log("SYSTEM", "ERROR", f"Failed to read config {self.config_path}: {exc}")
             return []
 
         if not isinstance(data, list):
-            Logger.log("SYSTEM", "ERROR", "Config file root must be a list.")
+            Logger.log("SYSTEM", "ERROR", f"Config root must be a list: {self.config_path}")
             return []
 
         return self._validate_all(data)

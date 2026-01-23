@@ -149,16 +149,20 @@ class Runner:
                                 with self.broker.lock:
                                     result = self.broker.order_send(request)
                             if result is None:
-                                Logger.log(strategy.symbol, "ERROR", f"order_send returned None. Error: {mt5.last_error()}")
+                                Logger.log(
+                                    strategy.symbol,
+                                    "ERROR",
+                                    f"order_send returned None (magic={strategy.magic}). Error: {mt5.last_error()}",
+                                )
                                 continue
                             if result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                                 Logger.log(
                                     strategy.symbol,
                                     "ORDER_FAIL",
-                                    f"RC: {result.retcode} | {getattr(result, 'comment', '')}",
+                                    f"RC: {result.retcode} | {getattr(result, 'comment', '')} | magic={strategy.magic}",
                                 )
                 except Exception as exc:
-                    Logger.log(strategy.symbol, "ERROR", f"策略执行异常: {exc}")
+                    Logger.log(strategy.symbol, "ERROR", f"策略执行异常 (magic={strategy.magic}): {exc}")
                 finally:
                     # 确保无论是否发生异常都清理 action_collector
                     strategy._action_collector = None
