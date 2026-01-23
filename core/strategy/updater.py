@@ -16,6 +16,20 @@ class StrategyUpdater:
         cfg = normalize_config(cfg)
         current_state = strategy.get_state()
         current_state.pop("enabled", None)
+        cleared_orders = False
+
+        before = {
+            "enabled": strategy.enabled,
+            "step": strategy.step,
+            "tp_dist": strategy.tp_dist,
+            "lot": strategy.lot,
+            "window": strategy.window,
+            "buy_window": strategy.buy_window,
+            "sell_window": strategy.sell_window,
+            "min_price": strategy.min_price,
+            "max_price": strategy.max_price,
+            "mode": strategy.mode,
+        }
 
         atr_keys = (
             "use_atr",
@@ -47,6 +61,7 @@ class StrategyUpdater:
         new_symbol = cfg.get("symbol", strategy.symbol)
         if strategy.symbol != new_symbol:
             strategy.clear_old_orders()
+            cleared_orders = True
             self.broker.ensure_symbol(new_symbol)
             strategy.set_symbol(new_symbol, reset_runtime_state=True)
             current_state = {}
@@ -152,8 +167,25 @@ class StrategyUpdater:
         if adaptive_changed:
             strategy._last_adapt_bar_time = 0.0
 
-        # Ensure pending orders reflect latest strategy parameters.
-        strategy.clear_old_orders()
+        enabled_changed = ("enabled" in cfg) and (bool(cfg["enabled"]) != before["enabled"])
+        order_related_changed = any(
+            (
+                strategy.step != before["step"],
+                strategy.tp_dist != before["tp_dist"],
+                strategy.lot != before["lot"],
+                strategy.window != before["window"],
+                strategy.buy_window != before["buy_window"],
+                strategy.sell_window != before["sell_window"],
+                strategy.min_price != before["min_price"],
+                strategy.max_price != before["max_price"],
+                strategy.mode != before["mode"],
+            )
+        )
+        should_clear_orders = enabled_changed or order_related_changed or atr_changed or adaptive_changed
+
+        if should_clear_orders and not cleared_orders:
+            # Ensure pending orders reflect latest strategy parameters.
+            strategy.clear_old_orders()
 
         strategy.set_state(current_state)
         Logger.log("SYSTEM", "UPDATE", f"Strategy updated: {strategy.symbol} (Enabled: {strategy.enabled})")

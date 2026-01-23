@@ -74,6 +74,7 @@ class Runner:
             if not enabled_strategies:
                 time.sleep(interval)
                 continue
+            enabled_keys = {(s.magic, s.symbol) for s in enabled_strategies}
 
             with self.broker.lock:
                 all_orders = self.broker.orders_get()
@@ -82,12 +83,16 @@ class Runner:
             orders_by_key = defaultdict(list)
             if all_orders:
                 for o in all_orders:
-                    orders_by_key[(o.magic, o.symbol)].append(o)
+                    key = (o.magic, o.symbol)
+                    if key in enabled_keys:
+                        orders_by_key[key].append(o)
 
             positions_by_key = defaultdict(list)
             if all_positions:
                 for p in all_positions:
-                    positions_by_key[(p.magic, p.symbol)].append(p)
+                    key = (p.magic, p.symbol)
+                    if key in enabled_keys:
+                        positions_by_key[key].append(p)
 
             # 预取 tick：同一 symbol 多策略时避免重复调用 mt5.symbol_info_tick
             symbols = {s.symbol for s in enabled_strategies}

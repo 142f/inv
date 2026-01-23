@@ -123,7 +123,7 @@
   tp_dist: 6         # 止盈距离
   window: 3                     # 盘口挂单数量 (单边)
   min_p: 4000.0                 # 最小交易价格
-  max_p: 4999            # 最大交易价格
+  max_p: 5222            # 最大交易价格
   enabled: true                 # 是否启用
   mode: long                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
