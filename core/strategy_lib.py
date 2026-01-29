@@ -4,6 +4,7 @@ import time
 import numpy as np
 from .logger import Logger
 from core.strategy.components import GridCalculator, RiskManager
+from core.strategy.components.risk_manager import RangeAction
 
 class _QueuedResult:
     def __init__(self):
@@ -922,43 +923,74 @@ class GridStrategy:
     # Risk / caps helpers
     # ------------------------
     def _calc_exposure(self, my_positions, my_orders):
+        """计算当前持仓和挂单的敞口情况。
+        
+        Args:
+            my_positions: 本策略的持仓列表
+            my_orders: 本策略的挂单列表
+            
+        Returns:
+            tuple: (long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol)
+        """
+        # 持仓量计算
         long_vol = sum(p.volume for p in my_positions if p.type == mt5.POSITION_TYPE_BUY)
         short_vol = sum(p.volume for p in my_positions if p.type == mt5.POSITION_TYPE_SELL)
 
-        pending_buy_vol = sum(o.volume_current for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT)
-        pending_sell_vol = sum(o.volume_current for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT)
+        # 挂单量计算 - 使用 volume_current（当前剩余量）而非 volume_initial（初始量）
+        # 因为部分成交的订单应该只计算剩余部分
+        pending_buy_vol = sum(
+            getattr(o, 'volume_current', o.volume_initial) 
+            for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT
+        )
+        pending_sell_vol = sum(
+            getattr(o, 'volume_current', o.volume_initial) 
+            for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT
+        )
 
+        # 净持仓 = (多头 + 待买) - (空头 + 待卖)
         net_vol = (long_vol + pending_buy_vol) - (short_vol + pending_sell_vol)
 
         return long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol
 
     def _allow_side(self, side, long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
                      *, long_pos_count: int = 0, short_pos_count: int = 0):
-        """
-        side: "buy" or "sell"
-        mode handling:
-          - neutral: abs(net) <= max_net_vol
-          - long:    cap long exposure by max_net_vol, prevent net going negative
-          - short:   cap short exposure by max_net_vol, prevent net going positive
+        """检查是否允许在指定方向开新仓位。
         
-        Also checks:
-          - max_long_vol / max_short_vol (单边持仓量上限)
-          - max_long_pos / max_short_pos (单边持仓数量上限)
+        Args:
+            side: "buy" 或 "sell"
+            long_vol: 当前多头持仓量
+            short_vol: 当前空头持仓量  
+            pending_buy_vol: 待成交买单量
+            pending_sell_vol: 待成交卖单量
+            net_vol: 净持仓量
+            long_pos_count: 多头持仓数量
+            short_pos_count: 空头持仓数量
+            
+        Returns:
+            bool: True 允许交易，False 禁止
+            
+        模式处理逻辑:
+            - neutral: abs(net) <= max_net_vol
+            - long: 只允许做多，cap限制多头敞口，禁止净空头
+            - short: 只允许做空，cap限制空头敞口，禁止净多头
         """
         lot = self.lot
+        
+        # 参数校验
+        if lot <= 0:
+            return False
         
         # --- 1. 单边持仓量限制 (max_long_vol / max_short_vol) ---
         if side == "buy":
             if self.max_long_vol is not None:
-                if (long_vol + pending_buy_vol + lot) > self.max_long_vol:
+                if (long_vol + pending_buy_vol + lot) > self.max_long_vol + 1e-9:
                     return False
             if self.max_long_pos is not None:
-                # 每挂一单可能成交，检查持仓数量
                 if (long_pos_count + 1) > self.max_long_pos:
                     return False
         else:  # sell
             if self.max_short_vol is not None:
-                if (short_vol + pending_sell_vol + lot) > self.max_short_vol:
+                if (short_vol + pending_sell_vol + lot) > self.max_short_vol + 1e-9:
                     return False
             if self.max_short_pos is not None:
                 if (short_pos_count + 1) > self.max_short_pos:
@@ -969,34 +1001,49 @@ class GridStrategy:
             return True
 
         cap = float(self.max_net_vol)
+        
+        # 容差常量，用于浮点数比较
+        EPSILON = 1e-9
 
         if self.mode == "neutral":
             new_net = net_vol + lot if side == "buy" else net_vol - lot
-            if abs(net_vol) > cap + 1e-9:
-                return abs(new_net) + 1e-12 < abs(net_vol)
-            return abs(new_net) <= cap + 1e-9
+            # 如果当前已超限，只允许减少绝对值的操作
+            if abs(net_vol) > cap + EPSILON:
+                return abs(new_net) < abs(net_vol) - EPSILON
+            return abs(new_net) <= cap + EPSILON
 
         if self.mode == "long":
-            # cap long exposure
+            # 做多模式：限制多头敞口，禁止做空
             total_long = long_vol + pending_buy_vol
             if side == "buy":
-                return (total_long + lot) <= cap
+                # 买单增加多头敞口
+                return (total_long + lot) <= cap + EPSILON
             else:
-                # 允许卖出止盈，但不允许 net 变负（避免做空）
-                # 注意：网格卖单是开仓卖，不是平仓，所以要限制
+                # long模式下的卖单是网格卖单（开空仓），应该被禁止
+                # 因为这会产生空头持仓，违反做多模式的意图
+                # 只有在启用对冲时才允许卖单
+                if not self.hedge_enabled:
+                    return False
+                # 对冲模式下，检查净持仓不能变为负数
                 new_net = net_vol - lot
-                if new_net < -1e-9:  # 使用小容差避免浮点误差
+                if new_net < -EPSILON:
                     return False
                 return True
 
         if self.mode == "short":
+            # 做空模式：限制空头敞口，禁止做多
             total_short = short_vol + pending_sell_vol
             if side == "sell":
-                return (total_short + lot) <= cap
+                # 卖单增加空头敞口
+                return (total_short + lot) <= cap + EPSILON
             else:
-                # 允许买入止盈，但不允许 net 变正（避免做多）
+                # short模式下的买单是网格买单（开多仓），应该被禁止
+                # 只有在启用对冲时才允许买单
+                if not self.hedge_enabled:
+                    return False
+                # 对冲模式下，检查净持仓不能变为正数
                 new_net = net_vol + lot
-                if new_net > 1e-9:
+                if new_net > EPSILON:
                     return False
                 return True
 
@@ -1243,14 +1290,13 @@ class GridStrategy:
             max_price=self.max_price,
             out_of_range_action=self.out_of_range_action,
         )
-        if range_action == "stop":
+        if range_action == RangeAction.STOP:
             Logger.log(self.symbol, "STOP", f"mid {mid_price} out of range [{self.min_price}, {self.max_price}]")
             self.enabled = False
             self.clear_old_orders()
             return
-        if range_action == "freeze":
-            # FIXED: freeze means do nothing (no trim/no add)
-            # Logger.log(self.symbol, "FREEZE", f"mid {mid_price} out of range, skip maintain")
+        if range_action == RangeAction.FREEZE:
+            # freeze means do nothing (no trim/no add)
             return
 
         # 1. 获取当前属于本实例的挂单和持仓
@@ -1315,7 +1361,7 @@ class GridStrategy:
                 f"Short={self._stats['short_profitable_count']:3d}cnt/{self._stats['short_profitable_amount']:+10.2f}"
             )
             Logger.log(self.symbol, "STATUS", status_msg)
-        self._last_status_log_time = time.time()
+            self._last_status_log_time = time.time()
 
         # --- Fixed Grid: Initialize anchor to min_price once ---
         if self.anchor is None:
