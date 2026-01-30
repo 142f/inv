@@ -25,7 +25,7 @@ class GridStrategy:
     _VALID_MODES = {"neutral", "long", "short"}
 
     def __init__(self, symbol, step, tp_dist, lot, magic, 
-                 window=6, min_p=0, max_p=999999, enabled=True, 
+                 sl_dist=0, window=6, min_p=0, max_p=999999, enabled=True, 
                  use_atr=False, atr_period=14, atr_factor=1.0, atr_mode="wilder", atr_timeframe="M15",
                  adaptive_enabled=False, adaptive_timeframe="M15", adaptive_lookback=200,
                  adaptive_quantile_low=0.30, adaptive_quantile_high=0.70,
@@ -36,6 +36,7 @@ class GridStrategy:
                  out_of_range_action="freeze", 
                  atr_update_seconds=5, atr_smooth=0.1, atr_change_threshold=0.01,
                  min_step_mult=0.5, max_step_mult=3.0,
+                 auto_trim=False,
                  lock=None,
                  datafeed=None,
                  # --- Anchor / Recenter ---
@@ -88,6 +89,7 @@ class GridStrategy:
         self.step = float(step)
         self.base_tp_dist = float(tp_dist)
         self.tp_dist = float(tp_dist)
+        self.sl_dist = float(sl_dist)
         self.base_lot = float(lot)
         self.lot = float(lot)
         self.magic = int(magic)
@@ -124,6 +126,7 @@ class GridStrategy:
         self.atr_change_threshold = atr_change_threshold
         self.min_step_mult = min_step_mult
         self.max_step_mult = max_step_mult
+        self.auto_trim = bool(auto_trim)
         
         self.lock = lock
         self.datafeed = datafeed
@@ -803,11 +806,20 @@ class GridStrategy:
 
             price = self._normalize_price(price)
             tp = self._normalize_price(price + self.tp_dist if is_buy else price - self.tp_dist)
+            sl = None
+            if self.sl_dist and self.sl_dist > 0:
+                dist = max(self.sl_dist, self.stop_level, self.point)
+                sl = price - dist if is_buy else price + dist
+                sl = self._normalize_price(sl)
+                if (is_buy and sl >= price) or ((not is_buy) and sl <= price):
+                    sl = None
             vol = self._normalize_volume(self.lot)
             atr_coef = 1.0
             if self.use_atr and self.base_step:
                 atr_coef = self.step / self.base_step
             price_width = max(12, self.digits + 9)
+
+            sl_str = f"{sl:>{price_width}.{self.digits}f}" if sl is not None else f"{'--':>{price_width}}"
 
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
@@ -820,13 +832,15 @@ class GridStrategy:
                 "magic": self.magic,
                 "type_time": mt5.ORDER_TIME_GTC,
             }
+            if sl is not None:
+                request["sl"] = sl
 
             if self._action_collector is not None:
                 self._queue_action(request)
                 Logger.log(
                     self.symbol,
                     "ORDER_SENT",
-                    f"{label} LIMIT | Price={price:>{price_width}.{self.digits}f} TP={tp:>{price_width}.{self.digits}f} | Magic={self.magic:04d} | ATR={atr_coef:.2f}x (queued)",
+                    f"{label} LIMIT | Price={price:>{price_width}.{self.digits}f} TP={tp:>{price_width}.{self.digits}f} SL={sl_str} | Magic={self.magic:04d} | ATR={atr_coef:.2f}x (queued)",
                 )
                 return True
 
@@ -849,7 +863,7 @@ class GridStrategy:
                         Logger.log(
                             self.symbol,
                             "ORDER_SENT",
-                            f"{label} LIMIT | Price={price:>{price_width}.{self.digits}f} TP={tp:>{price_width}.{self.digits}f} | Magic={self.magic:04d} | ATR={atr_coef:.2f}x (retry)",
+                            f"{label} LIMIT | Price={price:>{price_width}.{self.digits}f} TP={tp:>{price_width}.{self.digits}f} SL={sl_str} | Magic={self.magic:04d} | ATR={atr_coef:.2f}x (retry)",
                         )
                         return result.order
 
@@ -859,7 +873,7 @@ class GridStrategy:
             Logger.log(
                 self.symbol,
                 "ORDER_SENT",
-                f"{label} LIMIT | Price={price:>{price_width}.{self.digits}f} TP={tp:>{price_width}.{self.digits}f} | Magic={self.magic:04d} | ATR={atr_coef:.2f}x",
+                f"{label} LIMIT | Price={price:>{price_width}.{self.digits}f} TP={tp:>{price_width}.{self.digits}f} SL={sl_str} | Magic={self.magic:04d} | ATR={atr_coef:.2f}x",
             )
             return result.order
 
@@ -1494,6 +1508,24 @@ class GridStrategy:
             long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(
                 my_positions, my_orders
             )
+            # --- account stop-out buffer (爆仓金额) ---
+            liq_buffer = None
+            try:
+                account = mt5.account_info()
+                if account:
+                    equity = float(getattr(account, "equity", 0.0) or 0.0)
+                    margin = float(getattr(account, "margin", 0.0) or 0.0)
+                    so_mode = getattr(account, "margin_so_mode", None)
+                    so_level = getattr(account, "margin_so_so", None)
+                    if so_level is not None:
+                        # Stop-out equity threshold
+                        if so_mode == getattr(mt5, "ACCOUNT_STOP_OUT_PERCENT", None):
+                            stopout_equity = margin * float(so_level) / 100.0
+                        else:
+                            stopout_equity = float(so_level)
+                        liq_buffer = equity - stopout_equity
+            except Exception:
+                liq_buffer = None
             cap = float(self.max_net_vol)
             side = None
             current = 0.0
@@ -1594,6 +1626,7 @@ class GridStrategy:
             pct_label = "跌幅:" if side == "buy" else "涨幅:"
 
             remark_str = remark if remark else ""
+            liq_str = "--" if liq_buffer is None else f"{liq_buffer:+.2f}"
 
             cells = [
                 _cap_cell("方向:", side_cn, 8),
@@ -1602,6 +1635,7 @@ class GridStrategy:
                 _cap_cell("剩余:", f"{max(0.0, remaining):.2f}", 12),
                 _cap_cell("手数:", f"{self.lot:.2f}", 10),
                 _cap_cell("单数:", f"{max_orders}", 8),
+                _cap_cell("爆仓额:", liq_str, 12),
                 _cap_cell("现价:", cur_str, 16),
                 _cap_cell("末档价:", expect_str, 16),
                 _cap_cell("差值:", diff_str, 22),
@@ -1616,55 +1650,38 @@ class GridStrategy:
         # 3. 挂单维护逻辑
         
         # A. TRIM (清理多余/超界挂单)
-        target_set = set(target_buys + target_sells)
-        removed_tickets = set()
-        for o in list(my_orders):
-            if o.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT):
-                op = self._normalize_price(o.price_open)
-                should_remove = False
-                
-                # [SAFETY] 用户强烈要求：不要撤销我的订单
-                # 我们只撤销那些这的严重偏离的，或者干脆只在 DEBUG 模式下撤销
-                # 为了响应用户需求，这里暂时禁用掉“不在Target即撤销”的逻辑，
-                # 改为：只有极度偏离（比如超出 max_price/min_price）才撤销，
-                # 或者，更激进点——直接禁用自动撤单。
-                
-                # if op not in target_set:
-                #    should_remove = True
-                
-                # 只有当严重超界时才撤 (防止无限堆积)
-                # [USER-REQUEST] 用户明确要求手动管理，完全禁止自动撤单
-                # if op < self.min_price or op > self.max_price:
-                #      should_remove = True
+        if self.auto_trim:
+            target_set = set(target_buys + target_sells)
+            removed_tickets = set()
+            for o in list(my_orders):
+                if o.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT):
+                    op = self._normalize_price(o.price_open)
+                    should_remove = False
 
-                # TP 检查也暂时禁用，避免修改用户订单
-                # if not should_remove and self.tp_dist > 0:
-                #     ...
+                    if op not in target_set:
+                        should_remove = True
 
-                # 模式过滤 (这个必须有，否则单边模式会有反向单)
-                # [USER-REQUEST] 用户明确要求手动管理，完全禁止自动撤单
-                
-                # if o.type == mt5.ORDER_TYPE_BUY_LIMIT and self.mode == "short":
-                #    should_remove = True
-                # if o.type == mt5.ORDER_TYPE_SELL_LIMIT and self.mode == "long":
-                #    should_remove = True
+                    if op < self.min_price or op > self.max_price:
+                        should_remove = True
 
-                if should_remove:
-                    pass
-                    # res = None
-                    # # [SAFETY] 双重确认：真的要撤单吗？
-                    # # 只有在明确违规（模式冲突、严重越界）时才执行
-                    # if self.lock:
-                    #     with self.lock:
-                    #         res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
-                    # else:
-                    #     res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
-                    # if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-                    #     removed_tickets.add(o.ticket)
-                    #     Logger.log(self.symbol, "TRIM", f"安全撤单(越界/模式冲突): {op}")
-        if removed_tickets:
-            my_orders = [o for o in my_orders if o.ticket not in removed_tickets]
-            self._index_orders(my_orders)
+                    if o.type == mt5.ORDER_TYPE_BUY_LIMIT and self.mode == "short":
+                        should_remove = True
+                    if o.type == mt5.ORDER_TYPE_SELL_LIMIT and self.mode == "long":
+                        should_remove = True
+
+                    if should_remove:
+                        res = None
+                        if self.lock:
+                            with self.lock:
+                                res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                        else:
+                            res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                        if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+                            removed_tickets.add(o.ticket)
+                            Logger.log(self.symbol, "TRIM", f"\u5b89\u5168\u64a4\u5355(\u8d8a\u754c/\u6a21\u5f0f\u51b2\u7a81/\u76ee\u6807\u5916): {op}")
+            if removed_tickets:
+                my_orders = [o for o in my_orders if o.ticket not in removed_tickets]
+                self._index_orders(my_orders)
 
         # B. 补单 (带库存风控)
         

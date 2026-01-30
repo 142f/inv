@@ -8,7 +8,7 @@
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 150                    # 最小交易价格
   max_p: 170                    # 最大交易价格
-  enabled: true                 # 是否启用
+  enabled: false                # 是否启用
   mode: long                 # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
@@ -36,7 +36,7 @@
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 0.9                    # 最小交易价格
   max_p: 1.5                    # 最大交易价格
-  enabled: true                 # 是否启用
+  enabled: false                 # 是否启用
   mode: long                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
@@ -65,7 +65,7 @@
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 70000                  # 最小交易价格
   max_p: 1400000.0              # 最大交易价格
-  enabled: true               # 是否启用
+  enabled: false               # 是否启用
   mode: long                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
@@ -89,8 +89,8 @@
 
 - symbol: "BTCUSDc"             # 比特
   magic: 10031                   # 策略唯一ID
-  lot: 0.02                  # 交易手数
-  step: 199                    # 网格间距
+  lot: 0.08                 # 交易手数
+  step: 66                    # 网格间距
   tp_dist: 333           # 止盈距离
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 70000                  # 最小交易价格
@@ -116,15 +116,17 @@
   max_net_vol: 3                # 最大净持仓手数 (Neutral 模式风控)
 
 
-- symbol: "XAUUSDc"             # 交易品种
+- symbol: "XAUUSDm"             # 交易品种
   magic: 1001                   # 策略唯一ID
   lot: 0.01             # 交易手数
-  step: 1.8                       # 网格间距
-  tp_dist: 9.5         # 止盈距离
+  step: 13                      # 网格间距
+  tp_dist: 18         # 止盈距离
+  sl_dist: 100          # 止损距离
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 4000.0                 # 最小交易价格
   max_p: 5999            # 最大交易价格
   enabled: true                 # 是否启用
+  auto_trim: true               # ????????
   mode: long                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
@@ -142,7 +144,7 @@
   adaptive_range_buffer_atr: 1.0 # 区间缓冲(ATR倍数)
   recenter_steps: 3             # 价格偏离多少格后平移 Anchor
   recenter_cooldown: 30         # 平移冷却时间(秒)
-  max_net_vol: 1.8              # 最大净持仓手数 (Neutral 模式风控)
+  max_net_vol: 1              # 最大净持仓手数 (Neutral 模式风控)
   max_new_orders_per_update: 10 # 每轮最多补单数量
   # ===== 严格对冲参数（新增）===== 
   hedge_enabled: true           # 是否启用对冲

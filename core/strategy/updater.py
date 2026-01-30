@@ -23,6 +23,7 @@ class StrategyUpdater:
             "enabled": strategy.enabled,
             "step": strategy.step,
             "tp_dist": strategy.tp_dist,
+            "sl_dist": strategy.sl_dist,
             "lot": strategy.lot,
             "window": strategy.window,
             "buy_window": strategy.buy_window,
@@ -30,6 +31,7 @@ class StrategyUpdater:
             "min_price": strategy.min_price,
             "max_price": strategy.max_price,
             "mode": strategy.mode,
+            "auto_trim": getattr(strategy, "auto_trim", False),
         }
 
         atr_keys = (
@@ -84,6 +86,8 @@ class StrategyUpdater:
         if "tp_dist" in cfg:
             strategy.tp_dist = cfg["tp_dist"]
             strategy.base_tp_dist = strategy.tp_dist
+        if "sl_dist" in cfg and cfg.get("sl_dist") is not None:
+            strategy.sl_dist = cfg["sl_dist"]
         if "lot" in cfg:
             strategy.lot = cfg["lot"]
             strategy.base_lot = strategy.lot
@@ -134,6 +138,7 @@ class StrategyUpdater:
             "extreme_mode",
             "extreme_cooldown",
             "max_new_orders_per_update",
+            "auto_trim",
         ):
             if key in cfg:
                 value = cfg[key]
@@ -179,6 +184,7 @@ class StrategyUpdater:
             (
                 strategy.step != before["step"],
                 strategy.tp_dist != before["tp_dist"],
+                strategy.sl_dist != before["sl_dist"],
                 strategy.lot != before["lot"],
                 strategy.window != before["window"],
                 strategy.buy_window != before["buy_window"],
@@ -186,6 +192,7 @@ class StrategyUpdater:
                 strategy.min_price != before["min_price"],
                 strategy.max_price != before["max_price"],
                 strategy.mode != before["mode"],
+                strategy.auto_trim != before["auto_trim"],
             )
         )
         should_clear_orders = enabled_changed or order_related_changed or atr_changed or adaptive_changed

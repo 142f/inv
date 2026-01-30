@@ -10,6 +10,7 @@ _BOOL_KEYS = {
     "use_atr",
     "adaptive_enabled",
     "hedge_enabled",
+    "auto_trim",
 }
 
 _INT_KEYS = {
@@ -36,6 +37,7 @@ _INT_KEYS = {
 _FLOAT_KEYS = {
     "step",
     "tp_dist",
+    "sl_dist",
     "lot",
     "min_p",
     "max_p",
