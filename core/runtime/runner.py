@@ -120,9 +120,7 @@ class Runner:
                         tick=ticks_by_symbol.get(strategy.symbol),
                         orders=orders_by_key[(magic, strategy.symbol)],
                         positions=positions_by_key[(magic, strategy.symbol)],
-                        account=acc,
                         atr=atr,
-                        now=time.time(),
                     )
                     if hasattr(strategy, "on_tick"):
                         strategy.on_tick(ctx, action_collector=actions)

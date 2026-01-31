@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 
-import MetaTrader5 as mt5
 import numpy as np
 
 

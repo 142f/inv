@@ -5,7 +5,6 @@ import queue
 import sys
 import time
 import unicodedata
-from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 
@@ -39,6 +38,69 @@ class Logger:
     _aggregate_actions = {"SKIP"}
     _aggregate_interval = None
     _aggregate_buffer = {}
+
+    # 映射表提升为类常量
+    ACTION_MAP = {
+        "FILL_GRID": "补单检查",
+        "ORDER_SENT": "下单成功",
+        "RM_FAR": "清理远单",
+        "WINDOW_LIMIT": "窗口限制",
+        "CONFIG_ERROR": "配置错误",
+        "WARN": "系统警告",
+        "ERROR": "运行错误",
+        "CRITICAL": "严重错误",
+        "SLEEP": "暂停运行",
+        "CLEANUP": "清理旧单",
+        "SYSTEM": "系统消息",
+        "RELOAD": "重载配置",
+        "ADD": "新增策略",
+        "UPDATE": "更新策略",
+        "REMOVE": "移除策略",
+        "START": "系统启动",
+        "ORDER_FAIL": "下单失败",
+        "ORDER_CHECK": "挂单检查",
+        "EXCEPTION": "未知异常",
+        "TRIM": "修剪挂单",
+        "STATUS": "状态巡检",
+        "ACCOUNT": "资金播报",
+        "SKIP": "跳过补单",
+        "DEBUG": "调试信息",
+        "STOP": "策略停止",
+        "HALT": "熔断暂停",
+        "SHUTDOWN": "系统关闭",
+        "STATS_RESET": "统计重置",
+        "INIT": "初始化",
+        "RECENTER": "锚点平移",
+        "FUSE": "点差熔断",
+        "HEDGE_ADD": "对冲加仓",
+        "HEDGE_EXIT": "对冲平仓",
+    }
+
+    ACTION_LEVEL_MAP = {
+        "DEBUG": "debug",
+        "WARN": "warning",
+        "HALT": "warning",
+        "SLEEP": "warning",
+        "FUSE": "warning",
+        "ERROR": "error",
+        "EXCEPTION": "error",
+        "ORDER_FAIL": "error",
+        "CONFIG_ERROR": "error",
+        "CRITICAL": "critical",
+    }
+
+    NOISY_ACTIONS = {
+        "FILL_GRID",
+        "RM_FAR",
+        "WINDOW_OPT",
+        "WARN",
+        "ERROR",
+        "ORDER_FAIL",
+        "EXCEPTION",
+        "HALT",
+        "SKIP",
+        "DEBUG",
+    }
 
     @staticmethod
     def _display_width(text: str) -> int:
@@ -127,84 +189,35 @@ class Logger:
             cls._listener.stop()
             cls._listener = None
 
-    @staticmethod
-    def log(symbol, action, message, level="info"):
-        Logger._ensure_logger()
-
-        action_map = {
-            "FILL_GRID": "补单检查",
-            "ORDER_SENT": "下单成功",
-            "RM_FAR": "清理远单",
-            "WINDOW_LIMIT": "窗口限制",
-            "CONFIG_ERROR": "配置错误",
-            "WARN": "系统警告",
-            "ERROR": "运行错误",
-            "CRITICAL": "严重错误",
-            "SLEEP": "暂停运行",
-            "CLEANUP": "清理旧单",
-            "SYSTEM": "系统消息",
-            "RELOAD": "重载配置",
-            "ADD": "新增策略",
-            "UPDATE": "更新策略",
-            "REMOVE": "移除策略",
-            "START": "系统启动",
-            "ORDER_FAIL": "下单失败",
-            "ORDER_CHECK": "挂单检查",
-            "EXCEPTION": "未知异常",
-            "TRIM": "修剪挂单",
-            "STATUS": "状态巡检",
-            "ACCOUNT": "资金播报",
-            "SKIP": "跳过补单",
-            "DEBUG": "调试信息",
-            "STOP": "策略停止",
-            "HALT": "熔断暂停",
-            "SHUTDOWN": "系统关闭",
-            "STATS_RESET": "统计重置",
-            "INIT": "初始化",
-            "RECENTER": "锚点平移",
-            "FUSE": "点差熔断",
-            "HEDGE_ADD": "对冲加仓",
-            "HEDGE_EXIT": "对冲平仓",
-        }
-
-        action_level_map = {
-            "DEBUG": "debug",
-            "WARN": "warning",
-            "HALT": "warning",
-            "SLEEP": "warning",
-            "FUSE": "warning",
-            "ERROR": "error",
-            "EXCEPTION": "error",
-            "ORDER_FAIL": "error",
-            "CONFIG_ERROR": "error",
-            "CRITICAL": "critical",
-        }
+    @classmethod
+    def log(cls, symbol, action, message, level="info"):
+        cls._ensure_logger()
 
         level_str = str(level) if level is not None else "info"
-        if level_str.lower() == "info" and action in action_level_map:
-            level_str = action_level_map[action]
+        if level_str.lower() == "info" and action in cls.ACTION_LEVEL_MAP:
+            level_str = cls.ACTION_LEVEL_MAP[action]
         level = level_str
 
-        action_cn = action_map.get(action, action)
+        action_cn = cls.ACTION_MAP.get(action, action)
 
-        symbol_width = Logger._display_width(str(symbol))
-        if symbol_width > Logger._symbol_width:
-            Logger._symbol_width = symbol_width
-        action_width = Logger._display_width(str(action_cn))
-        if action_width > Logger._action_width:
-            Logger._action_width = action_width
+        symbol_width = cls._display_width(str(symbol))
+        if symbol_width > cls._symbol_width:
+            cls._symbol_width = symbol_width
+        action_width = cls._display_width(str(action_cn))
+        if action_width > cls._action_width:
+            cls._action_width = action_width
 
         try:
             throttle_seconds = float(os.getenv("INV_LOG_THROTTLE_SECONDS", "1.5"))
         except Exception:
             throttle_seconds = 1.5
 
-        if Logger._aggregate_interval and action in Logger._aggregate_actions:
+        if cls._aggregate_interval and action in cls._aggregate_actions:
             now = time.monotonic()
             key = (str(symbol), str(action))
-            entry = Logger._aggregate_buffer.get(key)
+            entry = cls._aggregate_buffer.get(key)
             if entry is None:
-                Logger._aggregate_buffer[key] = {
+                cls._aggregate_buffer[key] = {
                     "count": 0,
                     "last_message": message,
                     "last_emit": now,
@@ -212,37 +225,24 @@ class Logger:
             else:
                 entry["count"] += 1
                 entry["last_message"] = message
-                if (now - entry["last_emit"]) < Logger._aggregate_interval:
+                if (now - entry["last_emit"]) < cls._aggregate_interval:
                     return
                 if entry["count"] > 0:
                     message = f"{entry['count']}x | last: {entry['last_message']}"
                     entry["count"] = 0
                 entry["last_emit"] = now
 
-        noisy_actions = {
-            "FILL_GRID",
-            "RM_FAR",
-            "WINDOW_OPT",
-            "WARN",
-            "ERROR",
-            "ORDER_FAIL",
-            "EXCEPTION",
-            "HALT",
-            "SKIP",
-            "DEBUG",
-        }
-
-        if throttle_seconds > 0 and action in noisy_actions:
+        if throttle_seconds > 0 and action in cls.NOISY_ACTIONS:
             now = time.monotonic()
             key = (str(symbol), str(action), str(message), str(level).lower())
-            last = Logger._last_emit_ts.get(key)
+            last = cls._last_emit_ts.get(key)
             if last is not None and (now - last) < throttle_seconds:
                 return
-            Logger._last_emit_ts[key] = now
+            cls._last_emit_ts[key] = now
 
         # 统一格式：symbol对齐12字符，action对齐8字符，消息保持原样
-        symbol_pad = Logger._pad_display(symbol, Logger._symbol_width)
-        action_pad = Logger._pad_display(action_cn, Logger._action_width)
+        symbol_pad = cls._pad_display(symbol, cls._symbol_width)
+        action_pad = cls._pad_display(action_cn, cls._action_width)
         file_msg = f"{symbol_pad} | [{action_pad}] | {message}"
 
         color = Colors.RESET
@@ -275,5 +275,5 @@ class Logger:
         record.file_msg = file_msg
         record.console_msg = console_msg
         record.created = time.time()
-        Logger._logger.handle(record)
+        cls._logger.handle(record)
 

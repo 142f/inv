@@ -246,25 +246,6 @@ class GridStrategy:
             if '_stats' in state:
                 self._stats = state['_stats']
 
-
-    def _reset_stats(self):
-        """重置统计数据"""
-        self._stats = {
-            'magic': self.magic,
-            'start_time': self._stats['start_time'],  # 保持原始开始时间
-            'last_reset_time': time.time(),
-            'long_profitable_count': 0,
-            'long_profitable_amount': 0.0,
-            'short_profitable_count': 0,
-            'short_profitable_amount': 0.0,
-            'last_stats_update_time': 0
-        }
-        self._order_profit = {}
-        self._order_type = {}
-        self._last_deal_time = self._stats['last_reset_time']
-        self._last_deal_ticket = 0
-        Logger.log(self.symbol, "STATS_RESET", f"策略 {self.magic} 统计数据已重置，新的计算周期开始")
-
     def _deal_net_profit(self, deal) -> float:
         profit = float(getattr(deal, "profit", 0.0) or 0.0)
         swap = float(getattr(deal, "swap", 0.0) or 0.0)
