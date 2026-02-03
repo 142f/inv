@@ -119,7 +119,7 @@
 - symbol: "XAUUSDm"             # 交易品种
   magic: 1001                   # 策略唯一ID
   lot: 0.01             # 交易手数
-  step: 13                      # 网格间距
+  step: 15                      # 网格间距
   tp_dist: 18         # 止盈距离
   sl_dist: 100          # 止损距离
   window: 4                     # 盘口挂单数量 (单边)
