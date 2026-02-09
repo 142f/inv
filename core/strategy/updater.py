@@ -78,6 +78,19 @@ class StrategyUpdater:
         "be_trigger_steps",
         "be_buffer_points",
     )
+    _ORDER_RELATED_KEYS = (
+        "step",
+        "tp_dist",
+        "sl_dist",
+        "lot",
+        "window",
+        "buy_window",
+        "sell_window",
+        "min_price",
+        "max_price",
+        "mode",
+        "auto_trim",
+    )
 
     def __init__(self, broker):
         self.broker = broker
@@ -89,8 +102,8 @@ class StrategyUpdater:
         cleared_orders = False
 
         before = self._snapshot_order_related_state(strategy)
-        atr_before = self._snapshot_keys(strategy, self._ATR_KEYS)
-        adaptive_before = self._snapshot_keys(strategy, self._ADAPTIVE_KEYS)
+        atr_before = self._snapshot(strategy, self._ATR_KEYS)
+        adaptive_before = self._snapshot(strategy, self._ADAPTIVE_KEYS)
 
         new_symbol = cfg.get("symbol", strategy.symbol)
         if strategy.symbol != new_symbol:
@@ -107,9 +120,9 @@ class StrategyUpdater:
 
         self._apply_base_updates(strategy, cfg)
         self._apply_window_and_range_updates(strategy, cfg)
-        self._apply_atr_updates(strategy, cfg)
-        self._apply_general_updates(strategy, cfg)
-        self._apply_hedge_updates(strategy, cfg)
+        self._apply_updates(strategy, cfg, self._ATR_KEYS)
+        self._apply_updates(strategy, cfg, self._GENERAL_KEYS, coerce_value=self._coerce_general_value)
+        self._apply_updates(strategy, cfg, self._HEDGE_KEYS)
 
         atr_changed = self._has_changed(strategy, atr_before, self._ATR_KEYS)
         adaptive_changed = self._has_changed(strategy, adaptive_before, self._ADAPTIVE_KEYS)
@@ -120,21 +133,7 @@ class StrategyUpdater:
             strategy._last_adapt_bar_time = 0.0
 
         enabled_changed = ("enabled" in cfg) and (bool(cfg["enabled"]) != before["enabled"])
-        order_related_changed = any(
-            (
-                strategy.step != before["step"],
-                strategy.tp_dist != before["tp_dist"],
-                strategy.sl_dist != before["sl_dist"],
-                strategy.lot != before["lot"],
-                strategy.window != before["window"],
-                strategy.buy_window != before["buy_window"],
-                strategy.sell_window != before["sell_window"],
-                strategy.min_price != before["min_price"],
-                strategy.max_price != before["max_price"],
-                strategy.mode != before["mode"],
-                strategy.auto_trim != before["auto_trim"],
-            )
-        )
+        order_related_changed = self._has_changed(strategy, before, self._ORDER_RELATED_KEYS)
         should_clear_orders = enabled_changed or order_related_changed or atr_changed or adaptive_changed
 
         if should_clear_orders and not cleared_orders:
@@ -149,31 +148,30 @@ class StrategyUpdater:
             f"OrdersCleared: {should_clear_orders})",
         )
 
-    @staticmethod
-    def _snapshot_order_related_state(strategy: GridStrategy) -> dict:
-        return {
-            "symbol": strategy.symbol,
-            "enabled": strategy.enabled,
-            "step": strategy.step,
-            "tp_dist": strategy.tp_dist,
-            "sl_dist": strategy.sl_dist,
-            "lot": strategy.lot,
-            "window": strategy.window,
-            "buy_window": strategy.buy_window,
-            "sell_window": strategy.sell_window,
-            "min_price": strategy.min_price,
-            "max_price": strategy.max_price,
-            "mode": strategy.mode,
-            "auto_trim": getattr(strategy, "auto_trim", False),
-        }
+    @classmethod
+    def _snapshot_order_related_state(cls, strategy: GridStrategy) -> dict:
+        state = cls._snapshot(strategy, cls._ORDER_RELATED_KEYS)
+        state["symbol"] = strategy.symbol
+        state["enabled"] = strategy.enabled
+        return state
 
     @staticmethod
-    def _snapshot_keys(strategy: GridStrategy, keys: tuple[str, ...]) -> dict:
+    def _snapshot(strategy: GridStrategy, keys: tuple[str, ...]) -> dict:
         return {key: getattr(strategy, key, None) for key in keys}
 
     @staticmethod
     def _has_changed(strategy: GridStrategy, before: dict, keys: tuple[str, ...]) -> bool:
         return any(getattr(strategy, key, None) != before[key] for key in keys)
+
+    @staticmethod
+    def _apply_updates(strategy: GridStrategy, cfg: dict, keys: tuple[str, ...], *, coerce_value=None):
+        for key in keys:
+            if key not in cfg:
+                continue
+            value = cfg[key]
+            if coerce_value is not None:
+                value = coerce_value(strategy, key, value)
+            setattr(strategy, key, value)
 
     @staticmethod
     def _apply_base_updates(strategy: GridStrategy, cfg: dict):
@@ -222,28 +220,11 @@ class StrategyUpdater:
             strategy.sell_window = strategy.window
 
     @classmethod
-    def _apply_atr_updates(cls, strategy: GridStrategy, cfg: dict):
-        for key in cls._ATR_KEYS:
-            if key in cfg:
-                setattr(strategy, key, cfg[key])
-
-    @classmethod
-    def _apply_general_updates(cls, strategy: GridStrategy, cfg: dict):
-        for key in cls._GENERAL_KEYS:
-            if key not in cfg:
-                continue
-
-            value = cfg[key]
-            if key == "mode":
-                value = strategy._normalize_mode(value)
-            elif key in cls._GENERAL_INT_KEYS:
-                value = int(value) if value is not None else None
-            elif key in cls._GENERAL_FLOAT_KEYS:
-                value = float(value) if value is not None else None
-            setattr(strategy, key, value)
-
-    @classmethod
-    def _apply_hedge_updates(cls, strategy: GridStrategy, cfg: dict):
-        for key in cls._HEDGE_KEYS:
-            if key in cfg:
-                setattr(strategy, key, cfg[key])
+    def _coerce_general_value(cls, strategy: GridStrategy, key: str, value):
+        if key == "mode":
+            return strategy._normalize_mode(value)
+        if key in cls._GENERAL_INT_KEYS:
+            return int(value) if value is not None else None
+        if key in cls._GENERAL_FLOAT_KEYS:
+            return float(value) if value is not None else None
+        return value

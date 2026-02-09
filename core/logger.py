@@ -103,6 +103,24 @@ class Logger:
         "DEBUG",
     }
 
+    _LEVEL_STR_MAP = {
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "warn": logging.WARNING,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+        "critical": logging.CRITICAL,
+    }
+
+    _ACTION_COLOR_MAP = {
+        "ERROR": Colors.RED, "EXCEPTION": Colors.RED, "CRITICAL": Colors.RED, "ORDER_FAIL": Colors.RED,
+        "WARN": Colors.YELLOW, "HALT": Colors.YELLOW, "SLEEP": Colors.YELLOW,
+        "ORDER_SENT": Colors.GREEN, "ADD": Colors.GREEN, "START": Colors.GREEN, "RELOAD": Colors.GREEN,
+        "STATUS": Colors.CYAN, "ACCOUNT": Colors.CYAN,
+        "TRIM": Colors.MAGENTA, "CLEANUP": Colors.MAGENTA, "REMOVE": Colors.MAGENTA,
+        "SKIP": Colors.GREY, "DEBUG": Colors.GREY,
+    }
+
     @staticmethod
     def _display_width(text: str) -> int:
         width = 0
@@ -243,38 +261,26 @@ class Logger:
             if last is not None and (now - last) < throttle_seconds:
                 return
             cls._last_emit_ts[key] = now
+            # Prevent unbounded growth of the throttle cache
+            if len(cls._last_emit_ts) > 2000:
+                cutoff = now - throttle_seconds * 2
+                cls._last_emit_ts = {k: v for k, v in cls._last_emit_ts.items() if v > cutoff}
 
         # 统一格式：symbol对齐12字符，action对齐8字符，消息保持原样
         symbol_pad = cls._pad_display(symbol, cls._symbol_width)
         action_pad = cls._pad_display(action_cn, cls._action_width)
         file_msg = f"{symbol_pad} | [{action_pad}] | {message}"
 
-        color = Colors.RESET
         level_upper = str(level).upper()
-        if level_upper == "ERROR" or action in {"ERROR", "EXCEPTION", "CRITICAL", "ORDER_FAIL"}:
+        color = cls._ACTION_COLOR_MAP.get(action, Colors.RESET)
+        if color == Colors.RESET and level_upper in ("ERROR", "CRITICAL"):
             color = Colors.RED
-        elif level_upper in {"WARN", "WARNING"} or action in {"WARN", "HALT", "SLEEP"}:
+        elif color == Colors.RESET and level_upper in ("WARN", "WARNING"):
             color = Colors.YELLOW
-        elif action in {"ORDER_SENT", "ADD", "START", "RELOAD"}:
-            color = Colors.GREEN
-        elif action in {"STATUS", "ACCOUNT"}:
-            color = Colors.CYAN
-        elif action in {"TRIM", "CLEANUP", "REMOVE"}:
-            color = Colors.MAGENTA
-        elif action in {"SKIP", "DEBUG"}:
-            color = Colors.GREY
 
         console_msg = f"{color}{symbol_pad} | [{action_pad}] | {message}{Colors.RESET}"
 
-        level_map = {
-            "debug": logging.DEBUG,
-            "info": logging.INFO,
-            "warn": logging.WARNING,
-            "warning": logging.WARNING,
-            "error": logging.ERROR,
-            "critical": logging.CRITICAL,
-        }
-        levelno = level_map.get(str(level).lower(), logging.INFO)
+        levelno = cls._LEVEL_STR_MAP.get(str(level).lower(), logging.INFO)
         record = logging.LogRecord("GridTrading", levelno, "", 0, file_msg, (), None)
         record.file_msg = file_msg
         record.console_msg = console_msg

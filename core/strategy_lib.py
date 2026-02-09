@@ -5,6 +5,7 @@ import numpy as np
 from .logger import Logger
 from core.strategy.components import GridCalculator, RiskManager
 from core.strategy.components.risk_manager import RangeAction
+from core.runtime.datafeed import DataFeed
 
 class _QueuedResult:
     def __init__(self):
@@ -215,6 +216,13 @@ class GridStrategy:
             return "neutral"
         return normalized
 
+    def _mt5_call(self, func, *args, **kwargs):
+        """Wrap an MT5 API call with the shared lock when available."""
+        if self.lock:
+            with self.lock:
+                return func(*args, **kwargs)
+        return func(*args, **kwargs)
+
     def get_state(self):
         """获取策略内部状态，用于配置同步时保持状态"""
         return {
@@ -319,11 +327,7 @@ class GridStrategy:
 
         try:
             start_time = self._last_deal_time if self._last_deal_time else self._stats['last_reset_time']
-            if self.lock:
-                with self.lock:
-                    deals = mt5.history_deals_get(symbol=self.symbol, group="*", start=start_time)
-            else:
-                deals = mt5.history_deals_get(symbol=self.symbol, group="*", start=start_time)
+            deals = self._mt5_call(mt5.history_deals_get, symbol=self.symbol, group="*", start=start_time)
 
             if deals:
                 max_time = float(self._last_deal_time or 0.0)
@@ -394,11 +398,7 @@ class GridStrategy:
         return 0
 
     def _cache_symbol_info(self):
-        if self.lock:
-            with self.lock:
-                info = mt5.symbol_info(self.symbol)
-        else:
-            info = mt5.symbol_info(self.symbol)
+        info = self._mt5_call(mt5.symbol_info, self.symbol)
             
         if info:
             self.digits = info.digits
@@ -499,24 +499,19 @@ class GridStrategy:
             return
 
         precision = max(1, int(self.digits))
-        base_step = max(float(self.base_step), self.point)
-        base_tp = max(float(self.base_tp_dist), self.point)
+        raw = atr_value * self.atr_factor * step_mult
 
-        min_s = max(base_step * self.min_step_mult, self.point)
-        max_s = max(base_step * self.max_step_mult, min_s)
-        new_step = atr_value * self.atr_factor * step_mult
-        new_step = max(min_s, min(max_s, new_step))
-        new_step = round(new_step, precision)
-        if abs(new_step - self.step) / max(self.step, 1e-9) > self.atr_change_threshold:
-            self.step = new_step
+        def _clamp_and_apply(base_val: float, current: float) -> float:
+            base = max(float(base_val), self.point)
+            lo = max(base * self.min_step_mult, self.point)
+            hi = max(base * self.max_step_mult, lo)
+            clamped = round(max(lo, min(hi, raw)), precision)
+            if abs(clamped - current) / max(current, 1e-9) > self.atr_change_threshold:
+                return clamped
+            return current
 
-        min_tp = max(base_tp * self.min_step_mult, self.point)
-        max_tp = max(base_tp * self.max_step_mult, min_tp)
-        new_tp = atr_value * self.atr_factor * step_mult
-        new_tp = max(min_tp, min(max_tp, new_tp))
-        new_tp = round(new_tp, precision)
-        if abs(new_tp - self.tp_dist) / max(self.tp_dist, 1e-9) > self.atr_change_threshold:
-            self.tp_dist = new_tp
+        self.step = _clamp_and_apply(self.base_step, self.step)
+        self.tp_dist = _clamp_and_apply(self.base_tp_dist, self.tp_dist)
 
     def _maybe_adapt_params(self):
         if not self.adaptive_enabled or not self.use_atr:
@@ -533,11 +528,8 @@ class GridStrategy:
                 cache_seconds=2.0,
                 min_ratio=0.7,
             )
-        elif self.lock:
-            with self.lock:
-                rates = mt5.copy_rates_from_pos(self.symbol, timeframe, 0, lookback + 2)
         else:
-            rates = mt5.copy_rates_from_pos(self.symbol, timeframe, 0, lookback + 2)
+            rates = self._mt5_call(mt5.copy_rates_from_pos, self.symbol, timeframe, 0, lookback + 2)
 
         if rates is None or len(rates) < 10:
             return
@@ -593,11 +585,7 @@ class GridStrategy:
         # 5x period is usually sufficient (weight of seed < 1%).
         lookback = max(self.atr_period * 5, 100)
 
-        if self.lock:
-            with self.lock:
-                rates = mt5.copy_rates_from_pos(self.symbol, self._resolve_timeframe(), 0, lookback + 1)
-        else:
-            rates = mt5.copy_rates_from_pos(self.symbol, self._resolve_timeframe(), 0, lookback + 1)
+        rates = self._mt5_call(mt5.copy_rates_from_pos, self.symbol, self._resolve_timeframe(), 0, lookback + 1)
 
         # Check data sufficiency
         if rates is None or len(rates) < self.atr_period + 2:
@@ -618,47 +606,16 @@ class GridStrategy:
             return self._last_atr_value
 
         mode = str(self.atr_mode or "wilder").lower()
-        raw_atr = 0.0
-
-        if mode == "sma":
-            # SMA is just the mean of the last N TRs
-            raw_atr = float(np.mean(tr[-self.atr_period:]))
-        else:
-            # Wilder (alpha=1/N) or EMA (alpha=2/(N+1))
-            # 1. Initialize with SMA of the first 'period' elements
-            # Note: We slice from the beginning of our lookback window, not end.
-            current_atr = np.mean(tr[:self.atr_period])
-            
-            alpha = 1.0 / self.atr_period if mode == "wilder" else 2.0 / (self.atr_period + 1.0)
-            
-            # 2. Apply smoothing recursively over the rest of the history
-            # Using a loop is cleaner than implementing lfilter/vectorization for this specific case
-            for i in range(self.atr_period, len(tr)):
-                current_atr = (current_atr * (1.0 - alpha)) + (tr[i] * alpha)
-            
-            raw_atr = current_atr
+        raw_atr = float(DataFeed._calculate_raw_atr(tr, self.atr_period, mode))
 
         # Apply optional output smoothing (Low-pass filter on the output only)
-        # This keeps the signal stable without corrupting the indicator logic
-        if self._last_atr_value is None:
-            self._last_atr_value = raw_atr
-        elif self.atr_smooth:
-            s = float(self.atr_smooth)
-            if 0 < s < 1:
-                self._last_atr_value = (self._last_atr_value * (1 - s)) + (raw_atr * s)
-            else:
-                self._last_atr_value = raw_atr
-        else:
-            self._last_atr_value = raw_atr
+        self._last_atr_value = DataFeed._smooth_atr(raw_atr, self._last_atr_value, self.atr_smooth)
 
         self._last_atr_time = current_time
         return self._last_atr_value
 
     def _get_tick(self):
-        if self.lock:
-            with self.lock:
-                return mt5.symbol_info_tick(self.symbol)
-        return mt5.symbol_info_tick(self.symbol)
+        return self._mt5_call(mt5.symbol_info_tick, self.symbol)
 
     def _is_market_open(self, tick=None):
         """检查市场是否开放 (基于 Tick 时间)"""
@@ -706,21 +663,14 @@ class GridStrategy:
             if request is not None:
                 self._action_collector.append(request)
             return _QueuedResult()
-        if self.lock:
-            with self.lock:
-                return mt5.order_send(request)
-        return mt5.order_send(request)
+        return self._mt5_call(mt5.order_send, request)
 
     def _order_check(self, request):
         request = self._prepare_request(request)
         if request is None:
             return None
         try:
-            if self.lock:
-                with self.lock:
-                    result = mt5.order_check(request)
-            else:
-                result = mt5.order_check(request)
+            result = self._mt5_call(mt5.order_check, request)
         except Exception as exc:
             Logger.log(self.symbol, "ERROR", f"order_check exception: {exc}")
             return None
@@ -896,11 +846,7 @@ class GridStrategy:
 
     def clear_old_orders(self):
         """启动时清理旧网格挂单"""
-        if self.lock:
-            with self.lock:
-                orders = mt5.orders_get(symbol=self.symbol)
-        else:
-            orders = mt5.orders_get(symbol=self.symbol)
+        orders = self._mt5_call(mt5.orders_get, symbol=self.symbol)
             
         if orders:
             for o in orders:
@@ -969,6 +915,94 @@ class GridStrategy:
             hedge_enabled=self.hedge_enabled,
         )
 
+    def _has_duplicate_position_level(self, price, pos_k_set, existing_positions_prices):
+        if pos_k_set:
+            level = round((price - self.anchor) / self.step)
+            return level in pos_k_set
+
+        for p_price in existing_positions_prices:
+            if abs(p_price - price) < (self.step * 0.1):
+                return True
+        return False
+
+    def _place_side_targets(
+        self,
+        *,
+        side: str,
+        targets,
+        existing_prices,
+        market_price: float,
+        min_dist: float,
+        pos_k_set,
+        existing_positions_prices,
+        long_vol: float,
+        short_vol: float,
+        pending_buy_vol: float,
+        pending_sell_vol: float,
+        net_vol: float,
+        long_pos_count: int,
+        short_pos_count: int,
+        placed_count: int,
+    ):
+        skip_exist = 0
+        skip_near = 0
+        skip_pos = 0
+        skip_cap = 0
+        skip_risk = 0
+        placed_side = 0
+
+        for price in targets:
+            if placed_count >= self.max_new_orders_per_update:
+                skip_cap += 1
+                break
+            if price in existing_prices:
+                skip_exist += 1
+                continue
+            if abs(price - market_price) < min_dist:
+                skip_near += 1
+                continue
+
+            if self._has_duplicate_position_level(price, pos_k_set, existing_positions_prices):
+                skip_pos += 1
+                continue
+
+            if not self._allow_side(
+                side,
+                long_vol,
+                short_vol,
+                pending_buy_vol,
+                pending_sell_vol,
+                net_vol,
+                long_pos_count=long_pos_count,
+                short_pos_count=short_pos_count,
+            ):
+                skip_risk += 1
+                break
+
+            placed = self._place_buy_order(price) if side == "buy" else self._place_sell_order(price)
+            if placed:
+                placed_count += 1
+                placed_side += 1
+                if side == "buy":
+                    pending_buy_vol += self.lot
+                    net_vol += self.lot
+                else:
+                    pending_sell_vol += self.lot
+                    net_vol -= self.lot
+
+        return {
+            "placed_count": placed_count,
+            "placed_side": placed_side,
+            "pending_buy_vol": pending_buy_vol,
+            "pending_sell_vol": pending_sell_vol,
+            "net_vol": net_vol,
+            "skip_exist": skip_exist,
+            "skip_near": skip_near,
+            "skip_pos": skip_pos,
+            "skip_cap": skip_cap,
+            "skip_risk": skip_risk,
+        }
+
     # ------------------------
     # Hedge Helpers
     # ------------------------
@@ -982,31 +1016,18 @@ class GridStrategy:
                 min_ratio=0.7,
             )
 
-        if self.lock:
-            with self.lock:
-                rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M1, 0, n)
-        else:
-            rates = mt5.copy_rates_from_pos(self.symbol, mt5.TIMEFRAME_M1, 0, n)
+        rates = self._mt5_call(mt5.copy_rates_from_pos, self.symbol, mt5.TIMEFRAME_M1, 0, n)
 
         if rates is None or len(rates) < int(n * 0.7):
             return None
 
         return rates
 
-    def _quantile(self, arr, q: float):
-        # arr: list[float] non-empty
-        xs = sorted(arr)
-        if not xs:
+    @staticmethod
+    def _quantile(arr, q: float):
+        if not arr:
             return None
-        if q <= 0:
-            return xs[0]
-        if q >= 1:
-            return xs[-1]
-        pos = (len(xs) - 1) * q
-        lo = int(pos)
-        hi = min(lo + 1, len(xs) - 1)
-        frac = pos - lo
-        return xs[lo] * (1 - frac) + xs[hi] * frac
+        return float(np.quantile(arr, np.clip(q, 0.0, 1.0)))
 
     def _volatility_gate(self, rates):
         # range-based vol: high-low
@@ -1110,6 +1131,88 @@ class GridStrategy:
         }
         
         return self._dispatch_request(req)
+
+    def _run_hedge_manager(self, my_positions, tick):
+        """Execute the hedge manager logic for long-mode strategies.
+
+        Handles break-even stop adjustment, entry gating, tranche entry/exit.
+        Extracted from update() for readability; called only when hedge_enabled,
+        mode == "long", and max_net_vol is configured.
+        """
+        long_pos = [p for p in my_positions if p.type == mt5.POSITION_TYPE_BUY]
+        short_pos = [p for p in my_positions if p.type == mt5.POSITION_TYPE_SELL]
+
+        long_vol = sum(p.volume for p in long_pos)
+        short_vol = sum(p.volume for p in short_pos)
+        net_vol = long_vol - short_vol
+
+        cap = float(self.max_net_vol)
+        hedge_target = cap * self.hedge_fraction
+        tranche = hedge_target / max(1, self.hedge_tranches)
+
+        gross = long_vol + short_vol
+        if self.max_gross_vol is not None and gross >= self.max_gross_vol:
+            return  # total position at cap
+
+        now = time.time()
+        mid = (tick.bid + tick.ask) / 2.0
+
+        # (A) Break-even stop for profitable hedges
+        be_trigger = self.be_trigger_steps * self.step
+        for pos in short_pos:
+            if (pos.price_open - tick.ask) >= be_trigger:
+                self._move_sell_sl_to_breakeven(pos, tick=tick)
+
+        # (B) Entry gates: volatility + volume
+        rates = self._get_m1_rates_cached(n=450, cache_sec=10)
+        vol_ok, vol_cur, vol_thr = False, None, None
+        volm_ok, v_cur, v_base = False, None, None
+        if rates is not None:
+            vol_ok, vol_cur, vol_thr = self._volatility_gate(rates)
+            volm_ok, v_cur, v_base = self._volume_gate(rates)
+        gate_ok = vol_ok and volm_ok
+
+        # (C) Tranche entry
+        if net_vol >= cap and short_vol < hedge_target:
+            if gate_ok and (now - self._last_hedge_time >= self.hedge_cooldown):
+                ok_move = (
+                    self._last_hedge_entry_price is None
+                    or mid <= self._last_hedge_entry_price - self.hedge_entry_steps * self.step
+                )
+                if ok_move:
+                    vol_to_add = min(tranche, hedge_target - short_vol)
+                    if self.max_gross_vol is None or (gross + vol_to_add <= self.max_gross_vol):
+                        res = self._open_hedge_sell(vol_to_add, tick=tick)
+                        if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+                            self._last_hedge_time = now
+                            self._last_hedge_entry_price = mid
+                            Logger.log(
+                                self.symbol,
+                                "HEDGE_ADD",
+                                f"Magic={self.magic:04d} | Add={vol_to_add:6.2f} Short={short_vol:6.2f}/{hedge_target:6.2f} "
+                                f"Net={net_vol:6.2f}/{cap:6.2f} | Volatility={vol_cur:6.3f}>={vol_thr:6.3f} "
+                                f"Volume={v_cur:6.1f}>={self.hedge_vol_mult}x{v_base:6.1f}",
+                            )
+
+        # (D) Tranche exit on rebound / safe zone
+        safe_net = cap * (1.0 - self.hedge_fraction)
+        rebound = (
+            self._last_hedge_entry_price is not None
+            and mid >= self._last_hedge_entry_price + self.hedge_exit_steps * self.step
+        )
+        if short_vol > 0 and (now - self._last_hedge_time >= self.hedge_cooldown):
+            if rebound or net_vol <= safe_net:
+                target_pos = min(short_pos, key=lambda p: p.ticket)
+                vol_to_close = min(tranche, target_pos.volume)
+                res = self._close_sell_position(target_pos.ticket, vol_to_close, tick=tick)
+                if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+                    self._last_hedge_time = now
+                    Logger.log(
+                        self.symbol,
+                        "HEDGE_EXIT",
+                        f"Magic={self.magic:04d} | Close={vol_to_close:6.2f} Net={net_vol:6.2f} "
+                        f"SafeLevel={safe_net:6.2f} | Rebound={rebound}",
+                    )
 
     def on_tick(self, ctx, *, action_collector=None):
         return self.update(
@@ -1227,11 +1330,7 @@ class GridStrategy:
                 # 过滤属于本策略的订单 (增加 symbol 过滤)
                 my_orders = [o for o in orders_list if o.magic == self.magic and o.symbol == self.symbol]
         else:
-            if self.lock:
-                with self.lock:
-                    orders = mt5.orders_get(symbol=self.symbol)
-            else:
-                orders = mt5.orders_get(symbol=self.symbol)
+            orders = self._mt5_call(mt5.orders_get, symbol=self.symbol)
             my_orders = [o for o in orders if o.magic == self.magic] if orders else []
         
         # 1.5 获取持仓
@@ -1242,11 +1341,7 @@ class GridStrategy:
                 # 过滤属于本策略的持仓 (增加 symbol 过滤)
                 my_positions = [p for p in positions_list if p.symbol == self.symbol and p.magic == self.magic]
         else:
-            if self.lock:
-                with self.lock:
-                    positions = mt5.positions_get(symbol=self.symbol)
-            else:
-                positions = mt5.positions_get(symbol=self.symbol)
+            positions = self._mt5_call(mt5.positions_get, symbol=self.symbol)
             # 增加 magic 过滤
             my_positions = [p for p in positions if p.symbol == self.symbol and p.magic == self.magic] if positions else []
 
@@ -1291,94 +1386,9 @@ class GridStrategy:
         # self._init_anchor_if_needed(mid_price)
         # self._maybe_recenter(mid_price)
 
-        # ========== HEDGE MANAGER (strict) ==========
+        # ========== HEDGE MANAGER ==========
         if self.hedge_enabled and self.mode == "long" and self.max_net_vol is not None:
-            # 只统计本策略仓位（你务必保证 my_positions 已经按 magic+symbol 过滤）
-            long_pos = [p for p in my_positions if p.type == mt5.POSITION_TYPE_BUY]
-            short_pos = [p for p in my_positions if p.type == mt5.POSITION_TYPE_SELL]  # 对冲空仓
-
-            long_vol = sum(p.volume for p in long_pos)
-            short_vol = sum(p.volume for p in short_pos)
-            net_vol = long_vol - short_vol
-
-            cap = float(self.max_net_vol)
-            hedge_target = cap * self.hedge_fraction           # 最多对冲 1/3 cap
-            tranche = hedge_target / max(1, self.hedge_tranches)
-
-            # gross限制（必须）
-            gross = long_vol + short_vol
-            if self.max_gross_vol is not None and (gross >= self.max_gross_vol):
-                # 总仓位已经到顶：不再加对冲
-                pass
-
-            now = time.time()
-            mid = (tick.bid + tick.ask) / 2.0
-
-            # --- (A) 对冲盈利后 BE：先做，降低“错误对冲”的损失 ---
-            be_trigger = self.be_trigger_steps * self.step
-            for pos in short_pos:
-                # 空单盈利：open - ask >= be_trigger
-                if (pos.price_open - tick.ask) >= be_trigger:
-                    self._move_sell_sl_to_breakeven(pos, tick=tick)
-
-            # --- (B) 入场门槛：波动率90分位 + 成交量>=3倍 ---
-            rates = self._get_m1_rates_cached(n=450, cache_sec=10)
-            vol_ok, vol_cur, vol_thr = (False, None, None)
-            volm_ok, v_cur, v_base = (False, None, None)
-            if rates is not None:
-                vol_ok, vol_cur, vol_thr = self._volatility_gate(rates)
-                volm_ok, v_cur, v_base = self._volume_gate(rates)
-
-            # 只有在“真正爆发”时才允许对冲进入
-            gate_ok = (vol_ok and volm_ok)
-
-            # --- (C) 分三次加对冲：只有 net>=cap 才开始 ---
-            if net_vol >= cap and short_vol < hedge_target:
-                if gate_ok and (now - self._last_hedge_time >= self.hedge_cooldown):
-                    # 分段条件：继续向不利方向推进才加下一段（避免震荡误触发）
-                    ok_move = (
-                        self._last_hedge_entry_price is None or
-                        mid <= self._last_hedge_entry_price - self.hedge_entry_steps * self.step
-                    )
-                    if ok_move:
-                        # 还可以加多少
-                        vol_to_add = min(tranche, hedge_target - short_vol)
-
-                        # gross限制 + 本次加仓检查
-                        if self.max_gross_vol is None or (gross + vol_to_add <= self.max_gross_vol):
-                            res = self._open_hedge_sell(vol_to_add, tick=tick)
-                            if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-                                self._last_hedge_time = now
-                                self._last_hedge_entry_price = mid
-                                Logger.log(
-                                    self.symbol,
-                                    "HEDGE_ADD",
-                                    f"Magic={self.magic:04d} | Add={vol_to_add:6.2f} Short={short_vol:6.2f}/{hedge_target:6.2f} "
-                                    f"Net={net_vol:6.2f}/{cap:6.2f} | Volatility={vol_cur:6.3f}>={vol_thr:6.3f} "
-                                    f"Volume={v_cur:6.1f}>={self.hedge_vol_mult}x{v_base:6.1f}",
-                                )
-
-            # --- (D) 反弹/回安全区：分段退出一段 ---
-            safe_net = cap * (1.0 - self.hedge_fraction)  # 例如 cap=1.5 => 1.0
-            rebound = False
-            if self._last_hedge_entry_price is not None:
-                rebound = mid >= self._last_hedge_entry_price + self.hedge_exit_steps * self.step
-
-            if short_vol > 0 and (now - self._last_hedge_time >= self.hedge_cooldown):
-                if rebound or net_vol <= safe_net:
-                    # 选一个空仓平掉一段（FIFO：ticket最小先平）
-                    short_sorted = sorted(short_pos, key=lambda p: p.ticket)
-                    pos = short_sorted[0]
-                    vol_to_close = min(tranche, pos.volume)
-                    res = self._close_sell_position(pos.ticket, vol_to_close, tick=tick)
-                    if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-                        self._last_hedge_time = now
-                        Logger.log(
-                            self.symbol,
-                            "HEDGE_EXIT",
-                            f"Magic={self.magic:04d} | Close={vol_to_close:6.2f} Net={net_vol:6.2f} "
-                            f"SafeLevel={safe_net:6.2f} | Rebound={rebound}",
-                        )
+            self._run_hedge_manager(my_positions, tick)
         # ========== END HEDGE MANAGER ==========
 
         positions_for_block = my_positions
@@ -1576,12 +1586,7 @@ class GridStrategy:
                         should_remove = True
 
                     if should_remove:
-                        res = None
-                        if self.lock:
-                            with self.lock:
-                                res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
-                        else:
-                            res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+                        res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                         if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                             removed_tickets.add(o.ticket)
                             Logger.log(self.symbol, "TRIM", f"\u5b89\u5168\u64a4\u5355(\u8d8a\u754c/\u6a21\u5f0f\u51b2\u7a81/\u76ee\u6807\u5916): {op}")
@@ -1630,86 +1635,61 @@ class GridStrategy:
         skip_sell_risk = 0
         
         if not mode_conflict:
-            # 补买单
-            for price in target_buys:
-                if placed_count >= self.max_new_orders_per_update:
-                    skip_buy_cap += 1
-                    break
-                if price in existing_buy_prices:
-                    skip_buy_exist += 1
-                    continue
-                if abs(price - tick.ask) < min_dist:
-                    skip_buy_near += 1
-                    continue
-                
-                # 检查持仓重叠：优先用网格索引集合做 O(1) 去重
-                if pos_k_set:
-                    k = round((price - self.anchor) / self.step)
-                    if k in pos_k_set:
-                        skip_buy_pos += 1
-                        continue
-                else:
-                    # step=0 或 anchor 未初始化时兜底：退化为 O(n) 扫描
-                    is_duplicate_pos = False
-                    for p_price in existing_positions_prices:
-                        if abs(p_price - price) < (self.step * 0.1):
-                            is_duplicate_pos = True
-                            break
-                    if is_duplicate_pos:
-                        skip_buy_pos += 1
-                        continue
+            buy_result = self._place_side_targets(
+                side="buy",
+                targets=target_buys,
+                existing_prices=existing_buy_prices,
+                market_price=tick.ask,
+                min_dist=min_dist,
+                pos_k_set=pos_k_set,
+                existing_positions_prices=existing_positions_prices,
+                long_vol=long_vol,
+                short_vol=short_vol,
+                pending_buy_vol=pending_buy_vol,
+                pending_sell_vol=pending_sell_vol,
+                net_vol=net_vol,
+                long_pos_count=long_pos_count,
+                short_pos_count=short_pos_count,
+                placed_count=placed_count,
+            )
+            placed_count = buy_result["placed_count"]
+            placed_buy = buy_result["placed_side"]
+            pending_buy_vol = buy_result["pending_buy_vol"]
+            pending_sell_vol = buy_result["pending_sell_vol"]
+            net_vol = buy_result["net_vol"]
+            skip_buy_exist = buy_result["skip_exist"]
+            skip_buy_near = buy_result["skip_near"]
+            skip_buy_pos = buy_result["skip_pos"]
+            skip_buy_cap = buy_result["skip_cap"]
+            skip_buy_risk = buy_result["skip_risk"]
 
-                if not self._allow_side("buy", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
-                                        long_pos_count=long_pos_count, short_pos_count=short_pos_count):
-                    skip_buy_risk += 1
-                    break
-
-                if self._place_buy_order(price):
-                    placed_count += 1
-                    placed_buy += 1
-                    # 本地更新所有相关变量以便循环内即时生效
-                    pending_buy_vol += self.lot
-                    net_vol += self.lot
-
-            # 补卖单
-            for price in target_sells:
-                if placed_count >= self.max_new_orders_per_update:
-                    skip_sell_cap += 1
-                    break
-                if price in existing_sell_prices:
-                    skip_sell_exist += 1
-                    continue
-                if abs(price - tick.bid) < min_dist:
-                    skip_sell_near += 1
-                    continue
-
-                # 检查持仓重叠：优先用网格索引集合做 O(1) 去重
-                if pos_k_set:
-                    k = round((price - self.anchor) / self.step)
-                    if k in pos_k_set:
-                        skip_sell_pos += 1
-                        continue
-                else:
-                    is_duplicate_pos = False
-                    for p_price in existing_positions_prices:
-                        if abs(p_price - price) < (self.step * 0.1):
-                            is_duplicate_pos = True
-                            break
-                    if is_duplicate_pos:
-                        skip_sell_pos += 1
-                        continue
-
-                if not self._allow_side("sell", long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
-                                        long_pos_count=long_pos_count, short_pos_count=short_pos_count):
-                    skip_sell_risk += 1
-                    break
-
-                if self._place_sell_order(price):
-                    placed_count += 1
-                    placed_sell += 1
-                    # 本地更新所有相关变量以便循环内即时生效
-                    pending_sell_vol += self.lot
-                    net_vol -= self.lot
+            sell_result = self._place_side_targets(
+                side="sell",
+                targets=target_sells,
+                existing_prices=existing_sell_prices,
+                market_price=tick.bid,
+                min_dist=min_dist,
+                pos_k_set=pos_k_set,
+                existing_positions_prices=existing_positions_prices,
+                long_vol=long_vol,
+                short_vol=short_vol,
+                pending_buy_vol=pending_buy_vol,
+                pending_sell_vol=pending_sell_vol,
+                net_vol=net_vol,
+                long_pos_count=long_pos_count,
+                short_pos_count=short_pos_count,
+                placed_count=placed_count,
+            )
+            placed_count = sell_result["placed_count"]
+            placed_sell = sell_result["placed_side"]
+            pending_buy_vol = sell_result["pending_buy_vol"]
+            pending_sell_vol = sell_result["pending_sell_vol"]
+            net_vol = sell_result["net_vol"]
+            skip_sell_exist = sell_result["skip_exist"]
+            skip_sell_near = sell_result["skip_near"]
+            skip_sell_pos = sell_result["skip_pos"]
+            skip_sell_cap = sell_result["skip_cap"]
+            skip_sell_risk = sell_result["skip_risk"]
 
         if should_log_status:
             def _fmt_skip(label, exist, near, pos, cap, risk):

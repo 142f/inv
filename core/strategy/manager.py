@@ -21,13 +21,21 @@ class StrategyManager:
         self.datafeed = datafeed or DataFeed(broker)
 
     def sync(self):
+        configs = self._load_changed_configs()
+        if configs is None:
+            return
+
+        new_magics = self._sync_configs(configs)
+        self._remove_inactive_strategies(new_magics)
+
+    def _load_changed_configs(self) -> list[dict] | None:
         changed, configs = self.config_loader.load_if_changed()
         if not changed:
-            return
+            return None
 
         if configs is None:
             Logger.log("SYSTEM", "WARN", f"Config load returned None: {self.config_loader.config_path}")
-            return
+            return None
 
         if not configs:
             Logger.log(
@@ -35,22 +43,36 @@ class StrategyManager:
                 "WARN",
                 f"Config file is empty or has no valid strategies: {self.config_loader.config_path}",
             )
-            return
+            return None
 
+        return configs
+
+    @staticmethod
+    def _extract_magic(cfg: dict) -> int | None:
+        magic = cfg.get("magic") if isinstance(cfg, dict) else None
+        if magic is None:
+            Logger.log("SYSTEM", "CONFIG_ERROR", "Config missing magic; skipping entry.")
+            return None
+        return magic
+
+    def _sync_configs(self, configs: list[dict]) -> set[int]:
         new_magics: set[int] = set()
-
         for cfg in configs:
-            magic = cfg.get("magic") if isinstance(cfg, dict) else None
+            magic = self._extract_magic(cfg)
             if magic is None:
-                Logger.log("SYSTEM", "CONFIG_ERROR", "Config missing magic; skipping entry.")
                 continue
             new_magics.add(magic)
+            self._upsert_strategy(magic, cfg)
+        return new_magics
 
-            if magic not in self.active:
-                self._add_strategy(cfg)
-            else:
-                self._updater.apply(self.active[magic], cfg)
+    def _upsert_strategy(self, magic: int, cfg: dict):
+        strategy = self.active.get(magic)
+        if strategy is None:
+            self._add_strategy(cfg)
+            return
+        self._updater.apply(strategy, cfg)
 
+    def _remove_inactive_strategies(self, new_magics: set[int]):
         for magic in tuple(self.active):
             if magic not in new_magics:
                 self._remove_strategy(magic)

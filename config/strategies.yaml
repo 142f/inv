@@ -95,7 +95,7 @@
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 60000                  # 最小交易价格
   max_p: 800000.0              # 最大交易价格
-  enabled: true                # 是否启用
+  enabled: false                # 是否启用
   mode: short                  # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期

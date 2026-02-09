@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 
 _BOOL_KEYS = {
@@ -100,18 +100,23 @@ def _coerce_float(value: Any) -> Any:
         return value
 
 
+def _build_coercers_by_key() -> Dict[str, Callable[[Any], Any]]:
+    coercers: Dict[str, Callable[[Any], Any]] = {}
+    coercers.update({key: _coerce_bool for key in _BOOL_KEYS})
+    coercers.update({key: _coerce_int for key in _INT_KEYS})
+    coercers.update({key: _coerce_float for key in _FLOAT_KEYS})
+    return coercers
+
+
+_COERCERS_BY_KEY = _build_coercers_by_key()
+
+
 def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(cfg, dict):
         return {}
 
     normalized: Dict[str, Any] = {}
     for key, value in cfg.items():
-        if key in _BOOL_KEYS:
-            normalized[key] = _coerce_bool(value)
-        elif key in _INT_KEYS:
-            normalized[key] = _coerce_int(value)
-        elif key in _FLOAT_KEYS:
-            normalized[key] = _coerce_float(value)
-        else:
-            normalized[key] = value
+        coercer = _COERCERS_BY_KEY.get(key)
+        normalized[key] = coercer(value) if coercer is not None else value
     return normalized
