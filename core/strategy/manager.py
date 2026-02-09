@@ -37,20 +37,21 @@ class StrategyManager:
             )
             return
 
-        new_magics = [cfg.get("magic") for cfg in configs if isinstance(cfg, dict)]
+        new_magics: set[int] = set()
 
         for cfg in configs:
             magic = cfg.get("magic") if isinstance(cfg, dict) else None
             if magic is None:
                 Logger.log("SYSTEM", "CONFIG_ERROR", "Config missing magic; skipping entry.")
                 continue
+            new_magics.add(magic)
 
             if magic not in self.active:
                 self._add_strategy(cfg)
             else:
                 self._updater.apply(self.active[magic], cfg)
 
-        for magic in list(self.active.keys()):
+        for magic in tuple(self.active):
             if magic not in new_magics:
                 self._remove_strategy(magic)
 

@@ -36,64 +36,35 @@ class DataFeed:
         smooth: float,
         update_seconds: float,
     ) -> float | None:
-        key = (symbol, timeframe, int(period), str(mode or "").lower(), float(smooth))
-        state = self._atr_cache.get(key)
-        if state is None:
-            state = _AtrState()
-            self._atr_cache[key] = state
+        period = int(period)
+        smooth = float(smooth)
+        normalized_mode = str(mode or "").lower()
 
-        now = time.time()
-        if (now - state.last_time) < float(update_seconds):
+        key = (symbol, timeframe, period, normalized_mode, smooth)
+        state = self._atr_cache.setdefault(key, _AtrState())
+
+        now = self._now()
+        update_seconds = float(update_seconds)
+        if (now - state.last_time) < update_seconds:
             return state.last_value
 
-        # 增加数据量以确保 EMA/Wilder 计算能够收敛 (5x period 通常足够)
-        lookback = max(int(period) * 5, 50)
-        if getattr(self.broker, "lock", None) is not None:
-            with self.broker.lock:
-                rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, lookback + 1)
-        else:
-            rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, lookback + 1)
-        if rates is None or len(rates) < int(period) + 1:
+        # Fetch enough bars so EMA/Wilder recursion converges from SMA seed.
+        lookback = max(period * 5, 50)
+        rates = self._copy_rates(symbol, timeframe, lookback + 1)
+        if rates is None or len(rates) < period + 1:
             return state.last_value
 
-        # 丢弃最后一根未完成的 K 线
-        rates = rates[:-1]
+        rates = rates[:-1]  # Ignore the currently forming bar.
         highs = rates["high"][1:]
         lows = rates["low"][1:]
         prev_closes = rates["close"][:-1]
 
-        tr = np.maximum(
-            highs - lows,
-            np.maximum(abs(highs - prev_closes), abs(lows - prev_closes)),
-        )
-
-        if len(tr) < int(period):
+        tr = np.maximum(highs - lows, np.maximum(np.abs(highs - prev_closes), np.abs(lows - prev_closes)))
+        if len(tr) < period:
             return state.last_value
 
-        mode = str(mode or "wilder").lower()
-        if mode == "sma":
-            raw_atr = float(np.mean(tr[-int(period):]))
-        else:
-            # Wilder (alpha=1/N) 或 EMA (alpha=2/(N+1))
-            # 使用 SMA 初始化，然后递归计算
-            current_atr = float(np.mean(tr[:int(period)]))
-            alpha = 2.0 / (period + 1.0) if mode == "ema" else 1.0 / period
-            for i in range(int(period), len(tr)):
-                current_atr = (current_atr * (1.0 - alpha)) + (tr[i] * alpha)
-            raw_atr = current_atr
-
-        if smooth:
-            if state.last_value is None:
-                state.last_value = raw_atr
-            else:
-                smooth = float(smooth)
-                if 0 < smooth < 1:
-                    state.last_value = (state.last_value * (1 - smooth)) + (raw_atr * smooth)
-                else:
-                    state.last_value = raw_atr
-        else:
-            state.last_value = raw_atr
-
+        raw_atr = self._calculate_raw_atr(tr, period, normalized_mode)
+        state.last_value = self._smooth_atr(raw_atr, state.last_value, smooth)
         state.last_time = now
         return state.last_value
 
@@ -106,25 +77,49 @@ class DataFeed:
         cache_seconds: float = 1.0,
         min_ratio: float = 0.7,
     ) -> Any:
-        key = (symbol, timeframe, int(count))
-        state = self._rates_cache.get(key)
-        if state is None:
-            state = _RatesState()
-            self._rates_cache[key] = state
+        count = int(count)
+        key = (symbol, timeframe, count)
+        state = self._rates_cache.setdefault(key, _RatesState())
 
-        now = time.time()
-        if state.rates is not None and (now - state.last_time) < float(cache_seconds):
+        now = self._now()
+        cache_seconds = float(cache_seconds)
+        if state.rates is not None and (now - state.last_time) < cache_seconds:
             return state.rates
 
-        if getattr(self.broker, "lock", None) is not None:
-            with self.broker.lock:
-                rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, int(count))
-        else:
-            rates = self.broker.copy_rates_from_pos(symbol, timeframe, 0, int(count))
-
-        if rates is None or len(rates) < int(count * float(min_ratio)):
+        rates = self._copy_rates(symbol, timeframe, count)
+        min_count = int(count * float(min_ratio))
+        if rates is None or len(rates) < min_count:
             return state.rates
 
         state.rates = rates
         state.last_time = now
         return rates
+
+    def _copy_rates(self, symbol: str, timeframe: int, count: int):
+        if getattr(self.broker, "lock", None) is not None:
+            with self.broker.lock:
+                return self.broker.copy_rates_from_pos(symbol, timeframe, 0, int(count))
+        return self.broker.copy_rates_from_pos(symbol, timeframe, 0, int(count))
+
+    @staticmethod
+    def _now() -> float:
+        return time.monotonic()
+
+    @staticmethod
+    def _calculate_raw_atr(tr: np.ndarray, period: int, mode: str) -> float:
+        if mode == "sma":
+            return float(np.mean(tr[-period:]))
+
+        current_atr = float(np.mean(tr[:period]))
+        alpha = 2.0 / (period + 1.0) if mode == "ema" else 1.0 / period
+        for i in range(period, len(tr)):
+            current_atr = (current_atr * (1.0 - alpha)) + (tr[i] * alpha)
+        return float(current_atr)
+
+    @staticmethod
+    def _smooth_atr(raw_atr: float, last_value: float | None, smooth: float) -> float:
+        if not smooth or last_value is None:
+            return raw_atr
+        if 0 < smooth < 1:
+            return (last_value * (1 - smooth)) + (raw_atr * smooth)
+        return raw_atr

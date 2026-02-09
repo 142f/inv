@@ -31,20 +31,23 @@ class MT5Broker(BrokerBase):
     def is_connected(self) -> bool:
         return self._connected
 
-    def _decrypt_env(self, value: str | None) -> str:
+    def _decrypt_env(self, env_name: str, value: str | None) -> str:
         """Helper to safely decrypt env vars."""
         if not value:
             return ""
         if value.startswith("gAAAA"):
             decrypted = self.security.decrypt(value)
-            return decrypted if decrypted is not None else value
+            if decrypted is None:
+                Logger.log("SYSTEM", "WARN", f"{env_name} 解密失败，已忽略该配置项")
+                return ""
+            return decrypted
         return value
 
     def initialize(self) -> bool:
-        acc_id_str = self._decrypt_env(os.getenv("MT5_ACCOUNT_ID"))
-        pwd = self._decrypt_env(os.getenv("MT5_PASSWORD"))
-        srv = self._decrypt_env(os.getenv("MT5_SERVER"))
-        mt5_path = self._decrypt_env(os.getenv("MT5_PATH"))
+        acc_id_str = self._decrypt_env("MT5_ACCOUNT_ID", os.getenv("MT5_ACCOUNT_ID"))
+        pwd = self._decrypt_env("MT5_PASSWORD", os.getenv("MT5_PASSWORD"))
+        srv = self._decrypt_env("MT5_SERVER", os.getenv("MT5_SERVER"))
+        mt5_path = self._decrypt_env("MT5_PATH", os.getenv("MT5_PATH"))
 
         acc_id = int(acc_id_str) if acc_id_str and acc_id_str.isdigit() else 0
 

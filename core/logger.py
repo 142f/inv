@@ -38,6 +38,7 @@ class Logger:
     _aggregate_actions = {"SKIP"}
     _aggregate_interval = None
     _aggregate_buffer = {}
+    _throttle_seconds = None
 
     # 映射表提升为类常量
     ACTION_MAP = {
@@ -183,6 +184,12 @@ class Logger:
                 except Exception:
                     cls._aggregate_interval = 0.0
 
+            if cls._throttle_seconds is None:
+                try:
+                    cls._throttle_seconds = float(os.getenv("INV_LOG_THROTTLE_SECONDS", "1.5"))
+                except Exception:
+                    cls._throttle_seconds = 1.5
+
     @classmethod
     def _stop_listener(cls):
         if cls._listener:
@@ -207,10 +214,7 @@ class Logger:
         if action_width > cls._action_width:
             cls._action_width = action_width
 
-        try:
-            throttle_seconds = float(os.getenv("INV_LOG_THROTTLE_SECONDS", "1.5"))
-        except Exception:
-            throttle_seconds = 1.5
+        throttle_seconds = cls._throttle_seconds if cls._throttle_seconds is not None else 1.5
 
         if cls._aggregate_interval and action in cls._aggregate_actions:
             now = time.monotonic()

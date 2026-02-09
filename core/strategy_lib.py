@@ -949,100 +949,25 @@ class GridStrategy:
 
     def _allow_side(self, side, long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
                      *, long_pos_count: int = 0, short_pos_count: int = 0):
-        """检查是否允许在指定方向开新仓位。
-        
-        Args:
-            side: "buy" 或 "sell"
-            long_vol: 当前多头持仓量
-            short_vol: 当前空头持仓量  
-            pending_buy_vol: 待成交买单量
-            pending_sell_vol: 待成交卖单量
-            net_vol: 净持仓量
-            long_pos_count: 多头持仓数量
-            short_pos_count: 空头持仓数量
-            
-        Returns:
-            bool: True 允许交易，False 禁止
-            
-        模式处理逻辑:
-            - neutral: abs(net) <= max_net_vol
-            - long: 只允许做多，cap限制多头敞口，禁止净空头
-            - short: 只允许做空，cap限制空头敞口，禁止净多头
-        """
-        lot = self.lot
-        
-        # 参数校验
-        if lot <= 0:
-            return False
-        
-        # --- 1. 单边持仓量限制 (max_long_vol / max_short_vol) ---
-        if side == "buy":
-            if self.max_long_vol is not None:
-                if (long_vol + pending_buy_vol + lot) > self.max_long_vol + 1e-9:
-                    return False
-            if self.max_long_pos is not None:
-                if (long_pos_count + 1) > self.max_long_pos:
-                    return False
-        else:  # sell
-            if self.max_short_vol is not None:
-                if (short_vol + pending_sell_vol + lot) > self.max_short_vol + 1e-9:
-                    return False
-            if self.max_short_pos is not None:
-                if (short_pos_count + 1) > self.max_short_pos:
-                    return False
-        
-        # --- 2. max_net_vol 检查 ---
-        if self.max_net_vol is None:
-            return True
-
-        cap = float(self.max_net_vol)
-        
-        # 容差常量，用于浮点数比较
-        EPSILON = 1e-9
-
-        if self.mode == "neutral":
-            new_net = net_vol + lot if side == "buy" else net_vol - lot
-            # 如果当前已超限，只允许减少绝对值的操作
-            if abs(net_vol) > cap + EPSILON:
-                return abs(new_net) < abs(net_vol) - EPSILON
-            return abs(new_net) <= cap + EPSILON
-
-        if self.mode == "long":
-            # 做多模式：限制多头敞口，禁止做空
-            total_long = long_vol + pending_buy_vol
-            if side == "buy":
-                # 买单增加多头敞口
-                return (total_long + lot) <= cap + EPSILON
-            else:
-                # long模式下的卖单是网格卖单（开空仓），应该被禁止
-                # 因为这会产生空头持仓，违反做多模式的意图
-                # 只有在启用对冲时才允许卖单
-                if not self.hedge_enabled:
-                    return False
-                # 对冲模式下，检查净持仓不能变为负数
-                new_net = net_vol - lot
-                if new_net < -EPSILON:
-                    return False
-                return True
-
-        if self.mode == "short":
-            # 做空模式：限制空头敞口，禁止做多
-            total_short = short_vol + pending_sell_vol
-            if side == "sell":
-                # 卖单增加空头敞口
-                return (total_short + lot) <= cap + EPSILON
-            else:
-                # short模式下的买单是网格买单（开多仓），应该被禁止
-                # 只有在启用对冲时才允许买单
-                if not self.hedge_enabled:
-                    return False
-                # 对冲模式下，检查净持仓不能变为正数
-                new_net = net_vol + lot
-                if new_net > EPSILON:
-                    return False
-                return True
-
-        return True
+        _ = net_vol  # Keep signature compatibility with legacy call sites.
+        return self.risk_manager.check_inventory_limits(
+            long_vol=long_vol,
+            short_vol=short_vol,
+            pending_buy_vol=pending_buy_vol,
+            pending_sell_vol=pending_sell_vol,
+            net_vol=net_vol,
+            lot=self.lot,
+            side=side,
+            mode=self.mode,
+            max_net_vol=self.max_net_vol,
+            max_long_vol=self.max_long_vol,
+            max_short_vol=self.max_short_vol,
+            max_long_pos=self.max_long_pos,
+            max_short_pos=self.max_short_pos,
+            long_pos_count=long_pos_count,
+            short_pos_count=short_pos_count,
+            hedge_enabled=self.hedge_enabled,
+        )
 
     # ------------------------
     # Hedge Helpers

@@ -24,6 +24,7 @@ class SpreadCheck:
 
 class RiskManager:
     """风险管理组件，负责各类风控检查。"""
+    EPSILON = 1e-9
 
     def check_spread(
         self,
@@ -103,6 +104,7 @@ class RiskManager:
         short_vol: float,
         pending_buy_vol: float,
         pending_sell_vol: float,
+        net_vol: Optional[float] = None,
         lot: float,
         side: str,
         mode: str,
@@ -113,41 +115,28 @@ class RiskManager:
         max_short_pos: Optional[int] = None,
         long_pos_count: int = 0,
         short_pos_count: int = 0,
+        hedge_enabled: bool = False,
     ) -> bool:
-        """检查是否允许在指定方向开新仓位。
-        
-        Args:
-            long_vol: 当前多头持仓量
-            short_vol: 当前空头持仓量
-            pending_buy_vol: 待成交买单量
-            pending_sell_vol: 待成交卖单量
-            lot: 单笔交易量
-            side: 交易方向 ("buy" 或 "sell")
-            mode: 交易模式 ("neutral", "long", "short")
-            max_net_vol: 最大净持仓量
-            max_long_vol: 最大多头持仓量
-            max_short_vol: 最大空头持仓量
-            max_long_pos: 最大多头持仓数
-            max_short_pos: 最大空头持仓数
-            long_pos_count: 当前多头持仓数
-            short_pos_count: 当前空头持仓数
-            
-        Returns:
-            bool: True 表示允许交易，False 表示禁止
-        """
-        net_vol = (long_vol + pending_buy_vol) - (short_vol + pending_sell_vol)
+        """Return whether a new order is allowed under inventory constraints."""
+        if lot <= 0:
+            return False
+
+        eps = self.EPSILON
+        effective_net_vol = net_vol
+        if effective_net_vol is None:
+            effective_net_vol = (long_vol + pending_buy_vol) - (short_vol + pending_sell_vol)
         
         # 单边持仓量限制检查
         if side == "buy":
             if max_long_vol is not None:
-                if (long_vol + pending_buy_vol + lot) > max_long_vol:
+                if (long_vol + pending_buy_vol + lot) > max_long_vol + eps:
                     return False
             if max_long_pos is not None:
                 if (long_pos_count + 1) > max_long_pos:
                     return False
         else:  # sell
             if max_short_vol is not None:
-                if (short_vol + pending_sell_vol + lot) > max_short_vol:
+                if (short_vol + pending_sell_vol + lot) > max_short_vol + eps:
                     return False
             if max_short_pos is not None:
                 if (short_pos_count + 1) > max_short_pos:
@@ -160,31 +149,35 @@ class RiskManager:
         cap = float(max_net_vol)
 
         if mode == "neutral":
-            new_net = net_vol + lot if side == "buy" else net_vol - lot
+            new_net = effective_net_vol + lot if side == "buy" else effective_net_vol - lot
             # 如果当前已超限，只允许减少绝对值的操作
-            if abs(net_vol) > cap + 1e-9:
-                return abs(new_net) + 1e-12 < abs(net_vol)
-            return abs(new_net) <= cap + 1e-9
+            if abs(effective_net_vol) > cap + eps:
+                return abs(new_net) < abs(effective_net_vol) - eps
+            return abs(new_net) <= cap + eps
 
         if mode == "long":
             total_long = long_vol + pending_buy_vol
             if side == "buy":
-                return (total_long + lot) <= cap
+                return (total_long + lot) <= cap + eps
             else:
                 # 卖单会减少净多头，检查是否会变成净空头
-                new_net = net_vol - lot
-                if new_net < -1e-9:
+                new_net = effective_net_vol - lot
+                if not hedge_enabled:
+                    return False
+                if new_net < -eps:
                     return False
                 return True
 
         if mode == "short":
             total_short = short_vol + pending_sell_vol
             if side == "sell":
-                return (total_short + lot) <= cap
+                return (total_short + lot) <= cap + eps
             else:
                 # 买单会增加净多头，检查是否会变成净多头
-                new_net = net_vol + lot
-                if new_net > 1e-9:
+                new_net = effective_net_vol + lot
+                if not hedge_enabled:
+                    return False
+                if new_net > eps:
                     return False
                 return True
 

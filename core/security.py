@@ -40,5 +40,6 @@ class Security:
         try:
             return self.cipher.decrypt(encrypted_text.encode()).decode()
         except Exception as exc:
-            Logger.log("SYSTEM", "ERROR", f"解密失败: {exc}")
+            Logger.log("SYSTEM", "ERROR", f"解密失败({type(exc).__name__}): {exc!r}")
             return None
+
