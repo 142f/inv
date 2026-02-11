@@ -358,29 +358,50 @@ class GridUpdateMixin:
         
         # A. TRIM (清理多余/超界挂单)
         if self.auto_trim:
+            # 按订单类型分组
+            buy_orders = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT]
+            sell_orders = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT]
+            
+            # 对买单按价格降序排序（价格最高的在前）
+            buy_orders.sort(key=lambda x: x.price_open, reverse=True)
+            # 对卖单按价格升序排序（价格最低的在前）
+            sell_orders.sort(key=lambda x: x.price_open)
+            
+            # 保留价格最近的window数量个订单
+            buy_to_keep = buy_orders[:self.window] if self.window > 0 else []
+            sell_to_keep = sell_orders[:self.window] if self.window > 0 else []
+            
+            # 构建目标价格集合
             target_set = set(target_buys + target_sells)
+            
             removed_tickets = set()
             for o in list(my_orders):
                 if o.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT):
                     op = self._normalize_price(o.price_open)
                     should_remove = False
 
-                    if op not in target_set:
+                    # 检查是否在保留窗口内
+                    if o.type == mt5.ORDER_TYPE_BUY_LIMIT and o in buy_to_keep:
+                        should_remove = False
+                    elif o.type == mt5.ORDER_TYPE_SELL_LIMIT and o in sell_to_keep:
+                        should_remove = False
+                    # 检查是否在目标价格集合内
+                    elif op not in target_set:
                         should_remove = True
-
-                    if op < self.min_price or op > self.max_price:
+                    # 检查是否超出价格范围
+                    elif op < self.min_price or op > self.max_price:
                         should_remove = True
-
-                    if o.type == mt5.ORDER_TYPE_BUY_LIMIT and self.mode == "short":
+                    # 检查是否与模式冲突
+                    elif o.type == mt5.ORDER_TYPE_BUY_LIMIT and self.mode == "short":
                         should_remove = True
-                    if o.type == mt5.ORDER_TYPE_SELL_LIMIT and self.mode == "long":
+                    elif o.type == mt5.ORDER_TYPE_SELL_LIMIT and self.mode == "long":
                         should_remove = True
 
                     if should_remove:
                         res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                         if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                             removed_tickets.add(o.ticket)
-                            Logger.log(self.symbol, "TRIM", f"\u5b89\u5168\u64a4\u5355(\u8d8a\u754c/\u6a21\u5f0f\u51b2\u7a81/\u76ee\u6807\u5916): {op}")
+                            Logger.log(self.symbol, "TRIM", f"安全撤单(越界/模式冲突/目标外): {op}")
             if removed_tickets:
                 my_orders = [o for o in my_orders if o.ticket not in removed_tickets]
                 self._index_orders(my_orders)
