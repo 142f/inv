@@ -3,6 +3,7 @@ import MetaTrader5 as mt5
 import time
 from core.logger import Logger
 from .requests import iter_filling_candidates
+from .runtime import _mt5_order_check, _mt5_order_send
 
 class GridOrdersMixin:
     def _order_check(self, request):
@@ -10,7 +11,7 @@ class GridOrdersMixin:
         if request is None:
             return None
         try:
-            result = self._mt5_call(mt5.order_check, request)
+            result = _mt5_order_check(request)
         except Exception as exc:
             Logger.log(self.symbol, "ERROR", f"order_check exception: {exc}")
             return None

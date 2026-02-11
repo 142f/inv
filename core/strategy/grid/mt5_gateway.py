@@ -8,7 +8,13 @@ class MT5Gateway:
     def _call(self, func, *args, **kwargs):
         if self.lock:
             with self.lock:
+                # 对于 mt5.order_check 和 mt5.order_send，需要直接传递字典参数
+                if func in (mt5.order_check, mt5.order_send) and args and isinstance(args[0], dict):
+                    return func(args[0])
                 return func(*args, **kwargs)
+        # 对于 mt5.order_check 和 mt5.order_send，需要直接传递字典参数
+        if func in (mt5.order_check, mt5.order_send) and args and isinstance(args[0], dict):
+            return func(args[0])
         return func(*args, **kwargs)
 
     def orders_get(self, **kwargs):
@@ -33,7 +39,11 @@ class MT5Gateway:
         return self._call(mt5.copy_rates_from_pos, symbol, timeframe, start_pos, count)
     
     def order_send(self, request: dict) -> Any:
-        return self._call(mt5.order_send, request)
+        # 使用包装器确保正确传递参数
+        from ...mt5_wrapper import order_send
+        return order_send(request)
     
     def order_check(self, request: dict) -> Any:
-        return self._call(mt5.order_check, request)
+        # 使用包装器确保正确传递参数
+        from ...mt5_wrapper import order_check
+        return order_check(request)

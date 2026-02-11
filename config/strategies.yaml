@@ -113,14 +113,14 @@
   adaptive_range_buffer_atr: 1.0 # 区间缓冲(ATR倍数)
   recenter_steps: 5             # 价格偏离多少格后平移 Anchor
   recenter_cooldown: 60         # 平移冷却时间(秒)
-  max_net_vol: 0.2                # 最大净持仓手数 (Neutral 模式风控)
+  max_net_vol: 0.3                # 最大净持仓手数 (Neutral 模式风控)
 
 
 - symbol: "XAUUSDc"             # 交易品种
   magic: 1001                   # 策略唯一ID
   lot: 0.01             # 交易手数
-  step: 15                      # 网格间距
-  tp_dist: 18         # 止盈距离
+  step: 9                      # 网格间距
+  tp_dist: 11         # 止盈距离
   sl_dist: 100          # 止损距离
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 4000.0                 # 最小交易价格
