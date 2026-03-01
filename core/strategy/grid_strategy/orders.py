@@ -2,7 +2,7 @@
 import MetaTrader5 as mt5
 import time
 from core.logger import Logger
-from .runtime import iter_filling_candidates
+from .runtime_mixins import iter_filling_candidates
 
 class GridOrdersMixin:
     def _order_check(self, request):

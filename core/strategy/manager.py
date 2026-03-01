@@ -7,7 +7,7 @@ from typing import Any, Dict, Set
 
 from core.logger import Logger
 from core.runtime.datafeed import DataFeed
-from core.strategy_lib import GridStrategy
+from core.strategy.grid_strategy.strategy import GridStrategy
 
 from .config import normalize_config
 from .updater import StrategyUpdater

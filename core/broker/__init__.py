@@ -1,6 +1,5 @@
 """Broker abstractions and adapters."""
 
-from .base import BrokerBase
-from .mt5_adapter import MT5Broker
+from .mt5_adapter import BrokerBase, MT5Broker
 
 __all__ = ["BrokerBase", "MT5Broker"]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from core.logger import Logger
-from core.strategy_lib import GridStrategy
+from core.strategy.grid_strategy.strategy import GridStrategy
 
 from .config import normalize_config
 

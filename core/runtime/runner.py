@@ -8,7 +8,14 @@ from typing import Any, Iterable
 import MetaTrader5 as mt5
 
 from core.logger import Logger
-from core.runtime.context import StrategyContext
+
+
+@dataclass
+class StrategyContext:
+    tick: Any
+    orders: list
+    positions: list
+    atr: float | None = None
 
 
 _MIN_INTERVAL_SECONDS = 0.5
