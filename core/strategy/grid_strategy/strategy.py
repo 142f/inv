@@ -2,13 +2,41 @@
 
 from __future__ import annotations
 
+import time
+import MetaTrader5 as mt5
+
 from core.logger import Logger
 from core.strategy.components import GridCalculator, RiskManager
 
+TIMEFRAME_MAP = {
+    "M1": mt5.TIMEFRAME_M1,
+    "M5": mt5.TIMEFRAME_M5,
+    "M15": mt5.TIMEFRAME_M15,
+    "M30": mt5.TIMEFRAME_M30,
+    "H1": mt5.TIMEFRAME_H1,
+    "H4": mt5.TIMEFRAME_H4,
+    "D1": mt5.TIMEFRAME_D1,
+}
+
+VALID_MODES = {"neutral", "long", "short"}
+
+def as_optional(value, cast):
+    return cast(value) if value is not None else None
+
+def build_stats_state(magic: int) -> dict:
+    return {
+        "magic": magic,
+        "start_time": time.time(),
+        "last_reset_time": time.time(),
+        "long_profitable_count": 0,
+        "long_profitable_amount": 0.0,
+        "short_profitable_count": 0,
+        "short_profitable_amount": 0.0,
+        "last_stats_update_time": 0,
+    }
+
 from .adaptive import GridAdaptiveMixin
-from .constants import TIMEFRAME_MAP, VALID_MODES
 from .hedge import GridHedgeMixin
-from .init_helpers import as_optional, build_stats_state
 from .orders import GridOrdersMixin
 from .runtime import GridRuntimeMixin
 from .state_stats import GridStateStatsMixin
