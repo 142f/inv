@@ -6,7 +6,6 @@ import time
 
 import MetaTrader5 as mt5
 
-from ...mt5_wrapper import order_check as _mt5_order_check, order_send as _mt5_order_send
 from .requests import apply_default_filling_mode
 
 _MARKET_TICK_MAX_AGE_SECONDS = 600
@@ -22,16 +21,16 @@ class QueuedResult:
 class GridRuntimeMixin:
     def _mt5_call(self, func, *args, **kwargs):
         """Wrap an MT5 API call with the shared lock when available."""
+        def _execute():
+            # 对于 mt5.order_check 和 mt5.order_send，需要直接传递字典参数
+            if func in (mt5.order_check, mt5.order_send) and args and isinstance(args[0], dict):
+                return func(args[0])
+            return func(*args, **kwargs)
+
         if self.lock:
             with self.lock:
-                # 对于 mt5.order_check 和 mt5.order_send，需要直接传递字典参数
-                if func in (mt5.order_check, mt5.order_send) and args and isinstance(args[0], dict):
-                    return func(args[0])
-                return func(*args, **kwargs)
-        # 对于 mt5.order_check 和 mt5.order_send，需要直接传递字典参数
-        if func in (mt5.order_check, mt5.order_send) and args and isinstance(args[0], dict):
-            return func(args[0])
-        return func(*args, **kwargs)
+                return _execute()
+        return _execute()
 
     def _get_tick(self):
         return self._mt5_call(mt5.symbol_info_tick, self.symbol)
@@ -64,4 +63,4 @@ class GridRuntimeMixin:
         request = self._prepare_request(request)
         if self._append_action_if_queued(request):
             return QueuedResult()
-        return _mt5_order_send(request)
+        return self._mt5_call(mt5.order_send, request)

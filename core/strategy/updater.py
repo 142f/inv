@@ -52,16 +52,6 @@ class StrategyUpdater:
         "auto_trim",
     )
 
-    _GENERAL_INT_KEYS = {"recenter_steps", "max_long_pos", "max_short_pos", "max_new_orders_per_update"}
-    _GENERAL_FLOAT_KEYS = {
-        "recenter_cooldown",
-        "max_long_vol",
-        "max_short_vol",
-        "max_net_vol",
-        "max_spread_points",
-        "extreme_cooldown",
-    }
-
     _HEDGE_KEYS = (
         "hedge_enabled",
         "hedge_fraction",
@@ -223,8 +213,4 @@ class StrategyUpdater:
     def _coerce_general_value(cls, strategy: GridStrategy, key: str, value):
         if key == "mode":
             return strategy._normalize_mode(value)
-        if key in cls._GENERAL_INT_KEYS:
-            return int(value) if value is not None else None
-        if key in cls._GENERAL_FLOAT_KEYS:
-            return float(value) if value is not None else None
         return value

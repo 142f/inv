@@ -358,20 +358,7 @@ class GridUpdateMixin:
         
         # A. TRIM (清理多余/超界挂单)
         if self.auto_trim:
-            # 按订单类型分组
-            buy_orders = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT]
-            sell_orders = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT]
-            
-            # 对买单按价格降序排序（价格最高的在前）
-            buy_orders.sort(key=lambda x: x.price_open, reverse=True)
-            # 对卖单按价格升序排序（价格最低的在前）
-            sell_orders.sort(key=lambda x: x.price_open)
-            
-            # 保留价格最近的window数量个订单
-            buy_to_keep = buy_orders[:self.window] if self.window > 0 else []
-            sell_to_keep = sell_orders[:self.window] if self.window > 0 else []
-            
-            # 构建目标价格集合
+            buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
             target_set = set(target_buys + target_sells)
             
             removed_tickets = set()
@@ -435,94 +422,64 @@ class GridUpdateMixin:
         placed_count = 0
         placed_buy = 0
         placed_sell = 0
-        skip_buy_exist = 0
-        skip_buy_near = 0
-        skip_buy_pos = 0
-        skip_buy_cap = 0
-        skip_buy_risk = 0
-        skip_sell_exist = 0
-        skip_sell_near = 0
-        skip_sell_pos = 0
-        skip_sell_cap = 0
-        skip_sell_risk = 0
-        
-        if not mode_conflict:
-            buy_result = self._place_side_targets(
-                side="buy",
-                targets=target_buys,
-                existing_prices=existing_buy_prices,
-                market_price=tick.ask,
-                min_dist=min_dist,
-                pos_k_set=pos_k_set,
-                existing_positions_prices=existing_positions_prices,
-                long_vol=long_vol,
-                short_vol=short_vol,
-                pending_buy_vol=pending_buy_vol,
-                pending_sell_vol=pending_sell_vol,
-                net_vol=net_vol,
-                long_pos_count=long_pos_count,
-                short_pos_count=short_pos_count,
-                placed_count=placed_count,
-            )
-            placed_count = buy_result["placed_count"]
-            placed_buy = buy_result["placed_side"]
-            pending_buy_vol = buy_result["pending_buy_vol"]
-            pending_sell_vol = buy_result["pending_sell_vol"]
-            net_vol = buy_result["net_vol"]
-            skip_buy_exist = buy_result["skip_exist"]
-            skip_buy_near = buy_result["skip_near"]
-            skip_buy_pos = buy_result["skip_pos"]
-            skip_buy_cap = buy_result["skip_cap"]
-            skip_buy_risk = buy_result["skip_risk"]
+        skips_stats = {
+            "buy": {"exist": 0, "near": 0, "pos": 0, "cap": 0, "risk": 0},
+            "sell": {"exist": 0, "near": 0, "pos": 0, "cap": 0, "risk": 0},
+        }
 
-            sell_result = self._place_side_targets(
-                side="sell",
-                targets=target_sells,
-                existing_prices=existing_sell_prices,
-                market_price=tick.bid,
-                min_dist=min_dist,
-                pos_k_set=pos_k_set,
-                existing_positions_prices=existing_positions_prices,
-                long_vol=long_vol,
-                short_vol=short_vol,
-                pending_buy_vol=pending_buy_vol,
-                pending_sell_vol=pending_sell_vol,
-                net_vol=net_vol,
-                long_pos_count=long_pos_count,
-                short_pos_count=short_pos_count,
-                placed_count=placed_count,
-            )
-            placed_count = sell_result["placed_count"]
-            placed_sell = sell_result["placed_side"]
-            pending_buy_vol = sell_result["pending_buy_vol"]
-            pending_sell_vol = sell_result["pending_sell_vol"]
-            net_vol = sell_result["net_vol"]
-            skip_sell_exist = sell_result["skip_exist"]
-            skip_sell_near = sell_result["skip_near"]
-            skip_sell_pos = sell_result["skip_pos"]
-            skip_sell_cap = sell_result["skip_cap"]
-            skip_sell_risk = sell_result["skip_risk"]
+        if not mode_conflict:
+            sides_to_process = [
+                ("buy", target_buys, existing_buy_prices, tick.ask),
+                ("sell", target_sells, existing_sell_prices, tick.bid),
+            ]
+            
+            for side, targets, existing_prices, market_price in sides_to_process:
+                result = self._place_side_targets(
+                    side=side,
+                    targets=targets,
+                    existing_prices=existing_prices,
+                    market_price=market_price,
+                    min_dist=min_dist,
+                    pos_k_set=pos_k_set,
+                    existing_positions_prices=existing_positions_prices,
+                    long_vol=long_vol,
+                    short_vol=short_vol,
+                    pending_buy_vol=pending_buy_vol,
+                    pending_sell_vol=pending_sell_vol,
+                    net_vol=net_vol,
+                    long_pos_count=long_pos_count,
+                    short_pos_count=short_pos_count,
+                    placed_count=placed_count,
+                )
+                
+                placed_count = result["placed_count"]
+                pending_buy_vol = result["pending_buy_vol"]
+                pending_sell_vol = result["pending_sell_vol"]
+                net_vol = result["net_vol"]
+                
+                if side == "buy": placed_buy = result["placed_side"]
+                else: placed_sell = result["placed_side"]
+
+                skips_stats[side] = {
+                    "exist": result["skip_exist"],
+                    "near": result["skip_near"],
+                    "pos": result["skip_pos"],
+                    "cap": result["skip_cap"],
+                    "risk": result["skip_risk"],
+                }
 
         if should_log_status:
-            def _fmt_skip(label, exist, near, pos, cap, risk):
+            def _fmt_skip(label, stats):
                 parts = []
-                if exist:
-                    parts.append(f"exist={exist}")
-                if near:
-                    parts.append(f"near={near}")
-                if pos:
-                    parts.append(f"pos={pos}")
-                if cap:
-                    parts.append(f"cap={cap}")
-                if risk:
-                    parts.append(f"risk={risk}")
+                for k, v in stats.items():
+                    if v: parts.append(f"{k}={v}")
                 if not parts:
                     return ""
                 return f"{label}({', '.join(parts)})"
 
             skip_sections = [
-                _fmt_skip("B", skip_buy_exist, skip_buy_near, skip_buy_pos, skip_buy_cap, skip_buy_risk),
-                _fmt_skip("S", skip_sell_exist, skip_sell_near, skip_sell_pos, skip_sell_cap, skip_sell_risk),
+                _fmt_skip("B", skips_stats["buy"]),
+                _fmt_skip("S", skips_stats["sell"]),
             ]
             skip_sections = [s for s in skip_sections if s]
             if skip_sections:

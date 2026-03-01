@@ -211,9 +211,7 @@ class Runner:
                 result = strategy._send_with_fillings(request)
             else:
                 with self.broker.lock:
-                    # 使用包装器确保正确传递参数
-                    from ..mt5_wrapper import order_send
-                    result = order_send(request)
+                    result = mt5.order_send(request)
 
             if result is None:
                 Logger.log(

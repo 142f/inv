@@ -154,9 +154,7 @@ class MT5Broker(BrokerBase):
         return mt5.symbol_info_tick(symbol)
 
     def order_send(self, request: dict) -> Any:
-        # 使用包装器确保正确传递参数
-        from ..mt5_wrapper import order_send
-        return order_send(request)
+        return mt5.order_send(request)
 
     def copy_rates_from_pos(self, symbol: str, timeframe: int, start_pos: int, count: int) -> Any:
         return mt5.copy_rates_from_pos(symbol, timeframe, start_pos, count)

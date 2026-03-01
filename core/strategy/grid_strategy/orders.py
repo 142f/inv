@@ -3,7 +3,6 @@ import MetaTrader5 as mt5
 import time
 from core.logger import Logger
 from .requests import iter_filling_candidates
-from .runtime import _mt5_order_check, _mt5_order_send
 
 class GridOrdersMixin:
     def _order_check(self, request):
@@ -11,7 +10,7 @@ class GridOrdersMixin:
         if request is None:
             return None
         try:
-            result = _mt5_order_check(request)
+            result = self._mt5_call(mt5.order_check, request)
         except Exception as exc:
             Logger.log(self.symbol, "ERROR", f"order_check exception: {exc}")
             return None
@@ -172,35 +171,30 @@ class GridOrdersMixin:
             # 通用错误暂停 5 秒，防止刷屏
             self.pause_until = time.time() + 5
 
+    def _get_orders_to_keep(self, my_orders):
+        buy_orders = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT]
+        sell_orders = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT]
+        buy_orders.sort(key=lambda x: x.price_open, reverse=True)
+        sell_orders.sort(key=lambda x: x.price_open)
+        buy_to_keep = buy_orders[:self.window] if self.window > 0 else []
+        sell_to_keep = sell_orders[:self.window] if self.window > 0 else []
+        return buy_to_keep, sell_to_keep
+
     def clear_old_orders(self):
         """启动时清理旧网格挂单，保留价格最近的window数量个订单"""
         orders = self._mt5_call(mt5.orders_get, symbol=self.symbol)
             
         if orders:
-            # 过滤出属于本策略的订单
             my_orders = [o for o in orders if o.magic == self.magic]
-            
-            # 按订单类型分组
-            buy_orders = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT]
-            sell_orders = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT]
-            
-            # 获取当前价格
             tick = self._get_tick()
             if tick is None:
-                return  # 无法获取当前价格，不执行清理
+                return
                 
-            # 对买单按价格降序排序（价格最高的在前）
-            buy_orders.sort(key=lambda x: x.price_open, reverse=True)
-            # 对卖单按价格升序排序（价格最低的在前）
-            sell_orders.sort(key=lambda x: x.price_open)
+            buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
             
-            # 保留价格最近的window数量个订单
-            buy_to_keep = buy_orders[:self.window] if self.window > 0 else []
-            sell_to_keep = sell_orders[:self.window] if self.window > 0 else []
-            
-            # 需要删除的订单 = 所有订单 - 保留的订单
-            buy_to_remove = [o for o in buy_orders if o not in buy_to_keep]
-            sell_to_remove = [o for o in sell_orders if o not in sell_to_keep]
+            # 过滤出不在保留列表中的订单
+            buy_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT and o not in buy_to_keep]
+            sell_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT and o not in sell_to_keep]
             
             # 删除超出窗口的订单
             for o in buy_to_remove + sell_to_remove:
