@@ -1,4 +1,4 @@
-"""Runtime orchestration: market data feed, indicator cache, and strategy scheduler."""
+"""运行时调度引擎：市场数据馈送、指标缓存与策略调度器。"""
 
 from __future__ import annotations
 
@@ -12,18 +12,18 @@ import MetaTrader5 as mt5
 
 from core.logger import Logger
 
-
 # ---------------------------------------------------------------------------
-# DataFeed
+# DataFeed (市场数据与指标模块)
 # ---------------------------------------------------------------------------
 
-@dataclass
+# 【修改点】引入 slots=True 约束内存布局，降低高频访问缓存时的寻址开销
+@dataclass(slots=True)
 class _AtrState:
     last_value: float | None = None
     last_time: float = 0.0
 
 
-@dataclass
+@dataclass(slots=True)
 class _RatesState:
     last_time: float = 0.0
     rates: Any | None = None
@@ -34,6 +34,8 @@ class DataFeed:
         self.broker = broker
         self._atr_cache: Dict[Tuple[str, int, int, str, float], _AtrState] = {}
         self._rates_cache: Dict[Tuple[str, int, int], _RatesState] = {}
+        # 【修改点】在初始化时缓存 lock 引用，消除高频执行 _copy_rates 时的 getattr 动态反射开销
+        self._lock = getattr(broker, "lock", None)
 
     def get_atr(
         self,
@@ -44,25 +46,24 @@ class DataFeed:
         smooth: float,
         update_seconds: float,
     ) -> float | None:
-        period = int(period)
-        smooth = float(smooth)
-        normalized_mode = str(mode or "").lower()
-
-        key = (symbol, timeframe, period, normalized_mode, smooth)
+        # 【修改点】移除了冗余的 int() / float() / str().lower() 强制转换。
+        # 作为底层的 DataFeed，我们假设上层传入的配置已经是规范化的（Normalized），消除热点代码路径上的无谓开销。
+        key = (symbol, timeframe, period, mode, smooth)
         state = self._atr_cache.setdefault(key, _AtrState())
 
         now = self._now()
-        update_seconds = float(update_seconds)
         if (now - state.last_time) < update_seconds:
             return state.last_value
 
-        # Fetch enough bars so EMA/Wilder recursion converges from SMA seed.
+        # 拉取足够的 K 线以确保 EMA/Wilder 平滑算法从 SMA 种子开始能够收敛
         lookback = max(period * 5, 50)
         rates = self._copy_rates(symbol, timeframe, lookback + 1)
         if rates is None or len(rates) < period + 1:
             return state.last_value
 
-        rates = rates[:-1]  # Ignore the currently forming bar.
+        rates = rates[:-1]  # 忽略当前正在形成的未闭合 K 线
+        
+        # 使用 NumPy 向量化计算 True Range (TR)
         highs = rates["high"][1:]
         lows = rates["low"][1:]
         prev_closes = rates["close"][:-1]
@@ -71,7 +72,7 @@ class DataFeed:
         if len(tr) < period:
             return state.last_value
 
-        raw_atr = self._calculate_raw_atr(tr, period, normalized_mode)
+        raw_atr = self._calculate_raw_atr(tr, period, mode)
         state.last_value = self._smooth_atr(raw_atr, state.last_value, smooth)
         state.last_time = now
         return state.last_value
@@ -85,17 +86,15 @@ class DataFeed:
         cache_seconds: float = 1.0,
         min_ratio: float = 0.7,
     ) -> Any:
-        count = int(count)
         key = (symbol, timeframe, count)
         state = self._rates_cache.setdefault(key, _RatesState())
 
         now = self._now()
-        cache_seconds = float(cache_seconds)
         if state.rates is not None and (now - state.last_time) < cache_seconds:
             return state.rates
 
         rates = self._copy_rates(symbol, timeframe, count)
-        min_count = int(count * float(min_ratio))
+        min_count = int(count * min_ratio)
         if rates is None or len(rates) < min_count:
             return state.rates
 
@@ -104,10 +103,11 @@ class DataFeed:
         return rates
 
     def _copy_rates(self, symbol: str, timeframe: int, count: int):
-        if getattr(self.broker, "lock", None) is not None:
-            with self.broker.lock:
-                return self.broker.copy_rates_from_pos(symbol, timeframe, 0, int(count))
-        return self.broker.copy_rates_from_pos(symbol, timeframe, 0, int(count))
+        """线程安全的 K 线拉取。"""
+        if self._lock:
+            with self._lock:
+                return self.broker.copy_rates_from_pos(symbol, timeframe, 0, count)
+        return self.broker.copy_rates_from_pos(symbol, timeframe, 0, count)
 
     @staticmethod
     def _now() -> float:
@@ -118,10 +118,14 @@ class DataFeed:
         if mode == "sma":
             return float(np.mean(tr[-period:]))
 
-        current_atr = float(np.mean(tr[:period]))
+        # 【修改点】将 numpy 数组转换为原生的 Python 列表。
+        # 避免在 Python 原生 for 循环中高频访问 numpy 标量引发的 "拆箱 (Unboxing)" 性能惩罚。
+        tr_list = tr.tolist()
+        current_atr = sum(tr_list[:period]) / period
         alpha = 2.0 / (period + 1.0) if mode == "ema" else 1.0 / period
-        for i in range(period, len(tr)):
-            current_atr = (current_atr * (1.0 - alpha)) + (tr[i] * alpha)
+        
+        for i in range(period, len(tr_list)):
+            current_atr = (current_atr * (1.0 - alpha)) + (tr_list[i] * alpha)
         return float(current_atr)
 
     @staticmethod
@@ -129,16 +133,14 @@ class DataFeed:
         if not smooth or last_value is None:
             return raw_atr
         if 0 < smooth < 1:
-            return (last_value * (1 - smooth)) + (raw_atr * smooth)
+            return (last_value * (1.0 - smooth)) + (raw_atr * smooth)
         return raw_atr
 
 
 # ---------------------------------------------------------------------------
-# Runner
+# Runner (调度器引擎，已应用之前的重构与优化)
 # ---------------------------------------------------------------------------
 
-# 【修改点】使用 slots=True (需 Python 3.10+) 替代动态字典，
-# 将极高频实例化的 Context 对象内存占用降低约 40-50%，显著缓解 GC 压力。
 @dataclass(slots=True)
 class StrategyContext:
     tick: Any
@@ -173,11 +175,10 @@ class Runner:
         interval = max(_MIN_INTERVAL_SECONDS, float(interval))
         started_at = time.monotonic()
 
-        self.strategy_manager.sync()  # 初始加载
+        self.strategy_manager.sync()
         loop_state = _LoopState(last_sync_time=time.monotonic())
 
         for _ in range(cycles):
-            # 【修改点】每轮循环仅发起一次系统时钟调用，将时间戳透传给所有子系统
             now = time.monotonic()
 
             if max_seconds > 0 and (now - started_at) >= max_seconds:
@@ -195,7 +196,6 @@ class Runner:
 
             self._sync_if_needed(loop_state, now)
 
-            # 【修改点】缓存 active.values() 迭代，避免每次都生成新视图
             enabled_strategies = [s for s in self.strategy_manager.active.values() if s.enabled]
             if not enabled_strategies:
                 time.sleep(interval)
@@ -277,7 +277,6 @@ class Runner:
 
     @staticmethod
     def _group_by_strategy_key(items: Iterable[Any] | None, enabled_keys: Set[Tuple[int, str]]) -> Dict:
-        """【修改点】前置判空拦截，避免在无订单/持仓时仍然创建并丢弃 defaultdict 对象。"""
         if not items:
             return {}
         grouped = defaultdict(list)
@@ -288,7 +287,6 @@ class Runner:
         return grouped
 
     def _fetch_ticks(self, strategies: list) -> Dict[str, Any]:
-        """批量获取当前激活品种的最新 Tick 数据。"""
         symbols = {strategy.symbol for strategy in strategies}
         with self.broker.lock:
             return {symbol: self.broker.symbol_info_tick(symbol) for symbol in symbols}
@@ -330,7 +328,6 @@ class Runner:
         try:
             ctx = self._build_strategy_context(strategy, magic, ticks_by_symbol, orders_by_key, positions_by_key)
 
-            # 策略统一调度入口
             if hasattr(strategy, "on_tick"):
                 strategy.on_tick(ctx, action_collector=actions)
             else:
@@ -346,14 +343,11 @@ class Runner:
         except Exception as exc:
             Logger.log(strategy.symbol, "异常", f"策略执行生命周期内发生崩溃 (magic={strategy.magic}): {exc}")
         finally:
-            # 【修改点】统一生命周期钩子管理，确保无论成功或崩溃，都安全剥离收集器
             strategy._action_collector = None
 
-        # 将发单逻辑移出 try-catch 块，隔离策略逻辑异常与网络发单异常
         self._flush_actions(strategy, actions)
 
     def _flush_actions(self, strategy, actions: list):
-        """【修改点】移除了冗余的 action_collector 清理，直接专注订单执行。"""
         if not actions:
             return
 
@@ -381,6 +375,5 @@ class Runner:
                     "拒单",
                     f"RC: {result.retcode} | {getattr(result, 'comment', '无附言')} | magic={strategy.magic}",
                 )
-
 
 __all__ = ["DataFeed", "Runner"]

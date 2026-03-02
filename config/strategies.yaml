@@ -90,8 +90,8 @@
 - symbol: "BTCUSDc"             # 比特
   magic: 10031                   # 策略唯一ID
   lot: 0.01                 # 交易手数
-  step: 222                    # 网格间距
-  tp_dist: 255           # 止盈距离
+  step: 255                    # 网格间距
+  tp_dist: 288           # 止盈距离
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 60000                  # 最小交易价格
   max_p: 800000.0              # 最大交易价格
