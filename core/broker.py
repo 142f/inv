@@ -1,4 +1,4 @@
-﻿"""MT5 broker adapter."""
+"""MT5 broker adapter."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 from core.logger import Logger
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 # ── 凭证加解密（合并自 security.py）─────────────────────────────────────────────

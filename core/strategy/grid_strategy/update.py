@@ -2,7 +2,7 @@
 import MetaTrader5 as mt5
 import time
 from core.logger import Logger
-from core.strategy.components.risk_manager import RangeAction
+from core.strategy.components import RangeAction
 
 class GridUpdateMixin:
     def on_tick(self, ctx, *, action_collector=None):

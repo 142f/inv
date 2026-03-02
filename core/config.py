@@ -18,7 +18,7 @@ class ConfigLoader:
     REQUIRED_FIELDS = ["symbol", "step", "tp_dist", "lot", "magic"]
 
     def __init__(self, config_path: Path | None = None):
-        project_root = Path(__file__).resolve().parents[2]
+        project_root = Path(__file__).resolve().parents[1]
         default_path = project_root / "config" / "strategies.yaml"
         self.config_path = Path(config_path) if config_path else default_path
         self.last_mtime = 0.0
