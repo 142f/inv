@@ -40,9 +40,8 @@ class GridUpdateMixin:
         # 获取一次 tick，后续复用（Runner 可传入 tick，减少重复的 MT5 调用）
         if tick is None:
             tick = self._get_tick()
-            
-            
-        if not tick or tick.bid <= 0: 
+
+        if not tick or tick.bid <= 0:
             self.pause_until = now + 5
             return
 
@@ -139,7 +138,7 @@ class GridUpdateMixin:
         self._index_orders(my_orders)
             
         # --- 状态播报 (每分钟一次) ---
-        should_log_status = time.time() - self._last_status_log_time > self._status_log_interval
+        should_log_status = now - self._last_status_log_time > self._status_log_interval
         if should_log_status:
             float_profit = sum(p.profit for p in my_positions)
             pos_vol = sum(p.volume for p in my_positions)
@@ -167,7 +166,7 @@ class GridUpdateMixin:
                 f"Short={self._stats['short_profitable_count']:3d}cnt/{self._stats['short_profitable_amount']:+10.2f}"
             )
             Logger.log(self.symbol, "STATUS", status_msg)
-            self._last_status_log_time = time.time()
+            self._last_status_log_time = now
 
         # --- Fixed Grid: Initialize anchor to min_price once ---
         if self.anchor is None:
@@ -355,10 +354,10 @@ class GridUpdateMixin:
         # A. TRIM (清理多余/超界挂单)
         if self.auto_trim:
             buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
-            target_set = set(target_buys + target_sells)
+            target_set = set(target_buys) | set(target_sells)
             
             removed_tickets = set()
-            for o in list(my_orders):
+            for o in my_orders:
                 if o.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT):
                     op = self._normalize_price(o.price_open)
                     should_remove = False

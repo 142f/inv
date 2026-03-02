@@ -251,7 +251,6 @@ class GridOrdersMixin:
 
     def _allow_side(self, side, long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
                      *, long_pos_count: int = 0, short_pos_count: int = 0):
-        _ = net_vol  # Keep signature compatibility with legacy call sites.
         return self.risk_manager.check_inventory_limits(
             long_vol=long_vol,
             short_vol=short_vol,

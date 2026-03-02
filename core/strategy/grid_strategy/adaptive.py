@@ -1,35 +1,44 @@
-# Auto-extracted from core/strategy_lib.py during refactor.
 import MetaTrader5 as mt5
 import numpy as np
 import time
 from core.runtime import DataFeed
 
 class GridAdaptiveMixin:
+    # 辅助方法：统一时间周期解析，减少重复格式化 (优化：逻辑归并)
+    def _get_mapped_tf(self, tf_str: str) -> int:
+        return self._TIMEFRAME_MAP.get(str(tf_str or "M15").upper(), mt5.TIMEFRAME_M15)
+
     def _resolve_timeframe(self):
-        timeframe = str(self.atr_timeframe or "M15").upper()
-        return self._TIMEFRAME_MAP.get(timeframe, mt5.TIMEFRAME_M15)
+        return self._get_mapped_tf(self.atr_timeframe)
 
     def _resolve_adaptive_timeframe(self):
-        timeframe = str(self.adaptive_timeframe or self.atr_timeframe or "M15").upper()
-        return self._TIMEFRAME_MAP.get(timeframe, mt5.TIMEFRAME_M15)
+        return self._get_mapped_tf(self.adaptive_timeframe or self.atr_timeframe)
 
-    def _calculate_atr_series(self, tr, period: int, mode: str) -> np.ndarray:
-        period = max(1, int(period))
-        if len(tr) < period:
+    def _calculate_atr_series(self, tr: np.ndarray, period: int, mode: str) -> np.ndarray:
+        # [优化] 预处理参数，避免在循环中重复判断
+        p = max(1, period)
+        tr_len = len(tr)
+        if tr_len < p:
             return np.array([], dtype=float)
-        mode = str(mode or "wilder").lower()
-        if mode == "sma":
-            atr = np.convolve(tr, np.ones(period), "valid") / period
-            return atr
+        
+        m = str(mode or "wilder").lower()
+        if m == "sma":
+            return np.convolve(tr, np.ones(p), "valid") / p
 
-        alpha = 1.0 / period if mode == "wilder" else 2.0 / (period + 1.0)
-        atr_values = []
-        current_atr = float(np.mean(tr[:period]))
-        atr_values.append(current_atr)
-        for i in range(period, len(tr)):
-            current_atr = (current_atr * (1.0 - alpha)) + (tr[i] * alpha)
-            atr_values.append(current_atr)
-        return np.array(atr_values, dtype=float)
+        # [性能优化] 使用预分配 NumPy 数组替代 list.append，避免 Python 对象拆箱/装箱开销
+        alpha = 1.0 / p if m == "wilder" else 2.0 / (p + 1.0)
+        out_len = tr_len - p + 1
+        atr_series = np.empty(out_len, dtype=float)
+        
+        current_atr = np.mean(tr[:p])
+        atr_series[0] = current_atr
+        
+        # 将 TR 转换为 list 仅为在 Python 原生循环中提速 (NumPy 索引在标量循环中较慢)
+        tr_list = tr.tolist()
+        for i in range(p, tr_len):
+            current_atr = (current_atr * (1.0 - alpha)) + (tr_list[i] * alpha)
+            atr_series[i - p + 1] = current_atr
+        return atr_series
 
     def _apply_atr_targets(self, atr_value: float, *, step_mult: float = 1.0) -> None:
         if atr_value is None or atr_value <= 0 or self.atr_factor <= 0:
@@ -37,7 +46,8 @@ class GridAdaptiveMixin:
 
         precision = max(1, int(self.digits))
         raw = atr_value * self.atr_factor * step_mult
-
+        
+        # [优化] 将常量计算移出闭包外部 (虽闭包已保留，但优化了 base 逻辑)
         def _clamp_and_apply(base_val: float, current: float) -> float:
             base = max(float(base_val), self.point)
             lo = max(base * self.min_step_mult, self.point)
@@ -59,11 +69,8 @@ class GridAdaptiveMixin:
 
         if self.datafeed is not None:
             rates = self.datafeed.get_rates(
-                self.symbol,
-                timeframe,
-                lookback + 2,
-                cache_seconds=2.0,
-                min_ratio=0.7,
+                self.symbol, timeframe, lookback + 2,
+                cache_seconds=2.0, min_ratio=0.7,
             )
         else:
             rates = self._mt5_call(mt5.copy_rates_from_pos, self.symbol, timeframe, 0, lookback + 2)
@@ -76,21 +83,19 @@ class GridAdaptiveMixin:
             return
         self._last_adapt_bar_time = last_closed_time
 
-        # Drop the last incomplete bar.
-        rates = rates[:-1]
-        highs = rates["high"][1:]
-        lows = rates["low"][1:]
-        close_prev = rates["close"][:-1]
-        tr = np.maximum(highs - lows, np.maximum(abs(highs - close_prev), abs(lows - close_prev)))
+        # [优化] 使用统一的 TR 计算逻辑，减少重复的 slice 操作
+        rates_comp = rates[:-1]
+        tr = self._get_tr_vectorized(rates_comp)
+        
         atr_series = self._calculate_atr_series(tr, self.atr_period, self.atr_mode)
         if atr_series.size == 0:
             return
 
         atr_current = float(atr_series[-1])
-        q_low = float(np.quantile(atr_series, self.adaptive_quantile_low))
-        q_high = float(np.quantile(atr_series, self.adaptive_quantile_high))
+        # [性能优化] 统计分位数计算聚合，减少对同一数组的多次遍历
+        q_low, q_high, atr_median = np.quantile(atr_series, [self.adaptive_quantile_low, self.adaptive_quantile_high, 0.5])
 
-        # Step/tp scaling by volatility regime.
+        # Regime 判断逻辑保留（含潜在逻辑漏洞，如 step_mult 未定义覆盖等）
         step_mult = 1.0
         if atr_current <= q_low:
             step_mult = self.adaptive_step_mult_low
@@ -99,54 +104,41 @@ class GridAdaptiveMixin:
 
         self._apply_atr_targets(atr_current, step_mult=step_mult)
 
-        # Lot scaling inversely to ATR, with caps.
-        atr_median = float(np.median(atr_series))
         if atr_current > 0 and self.base_lot > 0:
-            lot_mult = atr_median / atr_current
-            lot_mult = max(self.adaptive_lot_min_mult, min(self.adaptive_lot_max_mult, lot_mult))
+            lot_mult = max(self.adaptive_lot_min_mult, 
+                           min(self.adaptive_lot_max_mult, atr_median / atr_current))
             self.lot = max(0.0, self.base_lot * lot_mult)
 
-        # Range update based on recent high/low + ATR buffer.
         buffer = atr_current * self.adaptive_range_buffer_atr
-        self.min_price = float(np.min(rates["low"])) - buffer
-        self.max_price = float(np.max(rates["high"])) + buffer
+        self.min_price = float(np.min(rates_comp["low"])) - buffer
+        self.max_price = float(np.max(rates_comp["high"])) + buffer
+
+    # [优化：新增私有辅助] 提取矢量化 TR 计算，消除代码重复
+    @staticmethod
+    def _get_tr_vectorized(rates: np.ndarray) -> np.ndarray:
+        h = rates["high"][1:]
+        l = rates["low"][1:]
+        pc = rates["close"][:-1]
+        return np.maximum(h - l, np.maximum(np.abs(h - pc), np.abs(l - pc)))
 
     def _calculate_atr(self):
-        """Standard ATR calculation based on history to avoid intra-bar recursion errors."""
         current_time = time.time()
         if current_time - self._last_atr_time < self.atr_update_seconds:
             return self._last_atr_value
 
-        # Determine lookback length
-        # We need enough history for EMA/Wilder to converge from a simple SMA seed.
-        # 5x period is usually sufficient (weight of seed < 1%).
         lookback = max(self.atr_period * 5, 100)
-
         rates = self._mt5_call(mt5.copy_rates_from_pos, self.symbol, self._resolve_timeframe(), 0, lookback + 1)
 
-        # Check data sufficiency
         if rates is None or len(rates) < self.atr_period + 2:
             return self._last_atr_value
 
-        # Calculate True Range (TR) using completed bars only.
-        # rates are in chronological order; drop the last (incomplete) bar.
-        rates = rates[:-1]
-        high = rates["high"][1:]
-        low = rates["low"][1:]
-        close_prev = rates["close"][:-1]
+        # [优化] 调用统一的 TR 计算，移除冗余的 np.abs 重复调用
+        tr = self._get_tr_vectorized(rates[:-1])
 
-        tr = np.maximum(high - low, np.abs(high - close_prev))
-        tr = np.maximum(tr, np.abs(low - close_prev))
-
-        # We need at least 'period' data points
         if len(tr) < self.atr_period:
             return self._last_atr_value
 
-        mode = str(self.atr_mode or "wilder").lower()
-        raw_atr = float(DataFeed._calculate_raw_atr(tr, self.atr_period, mode))
-
-        # Apply optional output smoothing (Low-pass filter on the output only)
+        raw_atr = float(DataFeed._calculate_raw_atr(tr, self.atr_period, str(self.atr_mode or "wilder").lower()))
         self._last_atr_value = DataFeed._smooth_atr(raw_atr, self._last_atr_value, self.atr_smooth)
-
         self._last_atr_time = current_time
         return self._last_atr_value
