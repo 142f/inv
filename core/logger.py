@@ -5,6 +5,7 @@ import queue
 import sys
 import time
 import unicodedata
+import functools  # ✨ 新增：用于引入 LRU 缓存
 from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 
@@ -122,6 +123,7 @@ class Logger:
     }
 
     @staticmethod
+    @functools.lru_cache(maxsize=128)  # ✨ 关键修改点 1：增加缓存，高频复用的交易对和Action名可实现 O(1) 提取
     def _display_width(text: str) -> int:
         width = 0
         for ch in text:
@@ -132,9 +134,11 @@ class Logger:
         return width
 
     @classmethod
-    def _pad_display(cls, text: str, width: int) -> str:
+    # ✨ 关键修改点 2：新增 current_width 传参，若外部已计算过宽度则直接利用，消除隐式二次计算
+    def _pad_display(cls, text: str, target_width: int, current_width: int = None) -> str:
         text = str(text)
-        pad = width - cls._display_width(text)
+        actual_width = current_width if current_width is not None else cls._display_width(text)
+        pad = target_width - actual_width
         if pad <= 0:
             return text
         return text + (" " * pad)
@@ -225,10 +229,15 @@ class Logger:
 
         action_cn = cls.ACTION_MAP.get(action, action)
 
-        symbol_width = cls._display_width(str(symbol))
+        # ✨ 关键修改点 3：提前统一转为字符串类型，避免底层重复调用 str() 解析
+        str_symbol = str(symbol)
+        str_action_cn = str(action_cn)
+
+        symbol_width = cls._display_width(str_symbol)
         if symbol_width > cls._symbol_width:
             cls._symbol_width = symbol_width
-        action_width = cls._display_width(str(action_cn))
+            
+        action_width = cls._display_width(str_action_cn)
         if action_width > cls._action_width:
             cls._action_width = action_width
 
@@ -236,7 +245,7 @@ class Logger:
 
         if cls._aggregate_interval and action in cls._aggregate_actions:
             now = time.monotonic()
-            key = (str(symbol), str(action))
+            key = (str_symbol, str(action))
             entry = cls._aggregate_buffer.get(key)
             if entry is None:
                 cls._aggregate_buffer[key] = {
@@ -256,7 +265,8 @@ class Logger:
 
         if throttle_seconds > 0 and action in cls.NOISY_ACTIONS:
             now = time.monotonic()
-            key = (str(symbol), str(action), str(message), str(level).lower())
+            # ✨ 关键修改点 4：复用已被初始化的小写 level，避免重复调用 str().lower()
+            key = (str_symbol, str(action), str(message), level.lower())
             last = cls._last_emit_ts.get(key)
             if last is not None and (now - last) < throttle_seconds:
                 return
@@ -266,12 +276,13 @@ class Logger:
                 cutoff = now - throttle_seconds * 2
                 cls._last_emit_ts = {k: v for k, v in cls._last_emit_ts.items() if v > cutoff}
 
-        # 统一格式：symbol对齐12字符，action对齐8字符，消息保持原样
-        symbol_pad = cls._pad_display(symbol, cls._symbol_width)
-        action_pad = cls._pad_display(action_cn, cls._action_width)
+        # ✨ 关键修改点 5：显式传入外层已计算出的字符宽度，彻底截断内部的二次计算
+        symbol_pad = cls._pad_display(str_symbol, cls._symbol_width, current_width=symbol_width)
+        action_pad = cls._pad_display(str_action_cn, cls._action_width, current_width=action_width)
+        
         file_msg = f"{symbol_pad} | [{action_pad}] | {message}"
 
-        level_upper = str(level).upper()
+        level_upper = level.upper()
         color = cls._ACTION_COLOR_MAP.get(action, Colors.RESET)
         if color == Colors.RESET and level_upper in ("ERROR", "CRITICAL"):
             color = Colors.RED
@@ -280,10 +291,9 @@ class Logger:
 
         console_msg = f"{color}{symbol_pad} | [{action_pad}] | {message}{Colors.RESET}"
 
-        levelno = cls._LEVEL_STR_MAP.get(str(level).lower(), logging.INFO)
+        levelno = cls._LEVEL_STR_MAP.get(level.lower(), logging.INFO)
         record = logging.LogRecord("GridTrading", levelno, "", 0, file_msg, (), None)
         record.file_msg = file_msg
         record.console_msg = console_msg
         record.created = time.time()
         cls._logger.handle(record)
-

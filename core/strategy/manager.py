@@ -6,7 +6,7 @@ import inspect
 from typing import Any, Callable, Dict, FrozenSet
 
 from core.logger import Logger
-from core.runtime.datafeed import DataFeed
+from core.runtime import DataFeed
 from core.strategy.grid_strategy.strategy import GridStrategy
 
 # ── 配置归一化 (Config normalization) ──────────────────────────────────────────

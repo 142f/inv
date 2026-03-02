@@ -2,7 +2,7 @@
 import MetaTrader5 as mt5
 import numpy as np
 import time
-from core.runtime.datafeed import DataFeed
+from core.runtime import DataFeed
 
 class GridAdaptiveMixin:
     def _resolve_timeframe(self):

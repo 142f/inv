@@ -1,5 +1,3 @@
-"""Strategy components: grid calculator and risk manager."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,7 +8,6 @@ from typing import Callable, List, Optional, Set, Tuple
 # ── Grid Calculator ───────────────────────────────────────────────────────────
 
 class GridCalculator:
-    # Safety guard for unexpected parameter combinations.
     _MAX_ITERATIONS = 10000
 
     def __init__(self, normalize_price: Callable[[float], float]):
@@ -32,17 +29,12 @@ class GridCalculator:
         min_dist: Optional[float] = None,
         blocked_k: Optional[Set[int]] = None,
     ) -> Tuple[List[float], List[float]]:
-        # Keep API compatibility: recenter_steps is intentionally unused here.
         _ = recenter_steps
 
         target_buys: List[float] = []
         target_sells: List[float] = []
 
-        if step <= 0:
-            return target_buys, target_sells
-        if max_price <= min_price:
-            return target_buys, target_sells
-        if bid <= 0 or ask <= 0 or ask < bid:
+        if step <= 0 or max_price <= min_price or bid <= 0 or ask <= 0 or ask < bid:
             return target_buys, target_sells
 
         blocked_levels = blocked_k or set()
@@ -51,37 +43,20 @@ class GridCalculator:
         if mode in ("neutral", "long") and buy_window > 0:
             start_k = int((ask - anchor) / step) + 3
             target_buys = self._collect_side_targets(
-                side="buy",
-                start_k=start_k,
-                k_delta=-1,
-                window=buy_window,
-                anchor=anchor,
-                step=step,
-                min_price=min_price,
-                max_price=max_price,
-                bid=bid,
-                ask=ask,
-                min_dist=safe_min_dist,
-                blocked_k=blocked_levels,
+                side="buy", start_k=start_k, k_delta=-1, window=buy_window,
+                anchor=anchor, step=step, min_price=min_price, max_price=max_price,
+                bid=bid, ask=ask, min_dist=safe_min_dist, blocked_k=blocked_levels,
             )
 
         if mode in ("neutral", "short") and sell_window > 0:
             start_k = int((bid - anchor) / step) - 3
             target_sells = self._collect_side_targets(
-                side="sell",
-                start_k=start_k,
-                k_delta=1,
-                window=sell_window,
-                anchor=anchor,
-                step=step,
-                min_price=min_price,
-                max_price=max_price,
-                bid=bid,
-                ask=ask,
-                min_dist=safe_min_dist,
-                blocked_k=blocked_levels,
+                side="sell", start_k=start_k, k_delta=1, window=sell_window,
+                anchor=anchor, step=step, min_price=min_price, max_price=max_price,
+                bid=bid, ask=ask, min_dist=safe_min_dist, blocked_k=blocked_levels,
             )
-            target_sells.sort(reverse=True)
+            # ✨ 关键修改点 1：因 target_sells 生成时已严格单调递增，使用 reverse() 替代 sort()
+            target_sells.reverse()
 
         return target_buys, target_sells
 
@@ -104,130 +79,72 @@ class GridCalculator:
         targets: List[float] = []
         k = start_k
         iterations = 0
+        
+        # ✨ 关键修改点 2：循环不变式外提，避免高频循环内重复进行字符串比对
+        is_buy = side == "buy"
 
         while len(targets) < window and iterations < self._MAX_ITERATIONS:
             iterations += 1
             level = self._normalize_price(anchor + k * step)
 
-            if side == "buy":
+            # ✨ 关键修改点 3：内联 _should_skip_level 的逻辑，消除函数调用开销与二次 side 判断
+            if is_buy:
                 if level < min_price - step:
                     break
                 is_candidate = level < ask and min_price <= level <= max_price
+                if is_candidate and min_dist > 0.0 and (ask - level) < min_dist:
+                    is_candidate = False
             else:
                 if level > max_price + step:
                     break
                 is_candidate = level > bid and min_price <= level <= max_price
+                if is_candidate and min_dist > 0.0 and (level - bid) < min_dist:
+                    is_candidate = False
 
-            if is_candidate and not self._should_skip_level(
-                side=side,
-                level=level,
-                anchor=anchor,
-                step=step,
-                bid=bid,
-                ask=ask,
-                min_dist=min_dist,
-                blocked_k=blocked_k,
-            ):
+            if is_candidate:
+                if blocked_k:
+                    level_k = round((level - anchor) / step)
+                    if level_k in blocked_k:
+                        k += k_delta
+                        continue
                 targets.append(level)
 
             k += k_delta
 
         return targets
 
-    @staticmethod
-    def _should_skip_level(
-        *,
-        side: str,
-        level: float,
-        anchor: float,
-        step: float,
-        bid: float,
-        ask: float,
-        min_dist: float,
-        blocked_k: Set[int],
-    ) -> bool:
-        if min_dist > 0.0:
-            if side == "buy" and (ask - level) < min_dist:
-                return True
-            if side == "sell" and (level - bid) < min_dist:
-                return True
-
-        if blocked_k:
-            level_k = round((level - anchor) / step)
-            if level_k in blocked_k:
-                return True
-
-        return False
+    # ✨ 关键修改点 4：完全移除原 _should_skip_level 方法（已内联合并）
 
 
 # ── Risk Manager ──────────────────────────────────────────────────────────────
 
 class RangeAction(Enum):
-    """价格范围检查的结果动作。"""
     OK = "ok"
     FREEZE = "freeze"
     STOP = "stop"
 
-
 @dataclass
 class SpreadCheck:
-    """点差检查结果。"""
     triggered: bool
     spread: float
     pause_until: float
 
-
 class RiskManager:
-    """风险管理组件，负责各类风控检查。"""
     EPSILON = 1e-9
 
-    def check_spread(
-        self,
-        *,
-        bid: float,
-        ask: float,
-        max_spread_points: Optional[float],
-        point: float,
-        extreme_cooldown: float,
-        now: float,
-    ) -> SpreadCheck:
-        """检查当前点差是否超过阈值。"""
-        if max_spread_points is None or max_spread_points <= 0:
+    def check_spread(self, *, bid: float, ask: float, max_spread_points: Optional[float], point: float, extreme_cooldown: float, now: float) -> SpreadCheck:
+        if max_spread_points is None or max_spread_points <= 0 or point <= 0:
             return SpreadCheck(False, 0.0, 0.0)
-
-        if point <= 0:
-            return SpreadCheck(False, 0.0, 0.0)
-
         spread = ask - bid
-        # 边界检查：点差不应为负
-        if spread < 0:
-            return SpreadCheck(True, spread, now + extreme_cooldown)
-            
-        if spread > max_spread_points * point:
+        if spread < 0 or spread > max_spread_points * point:
             return SpreadCheck(True, spread, now + extreme_cooldown)
         return SpreadCheck(False, spread, 0.0)
 
-    def check_range(
-        self,
-        *,
-        mid_price: float,
-        min_price: float,
-        max_price: float,
-        out_of_range_action: str,
-    ) -> RangeAction:
-        """检查当前价格是否在有效范围内。"""
-        # 参数校验
+    def check_range(self, *, mid_price: float, min_price: float, max_price: float, out_of_range_action: str) -> RangeAction:
         if min_price >= max_price:
-            # 无效的价格范围配置，保守处理为冻结
             return RangeAction.FREEZE
-            
         if mid_price < min_price or mid_price > max_price:
-            action_str = str(out_of_range_action).lower().strip()
-            if action_str == "stop":
-                return RangeAction.STOP
-            # 默认为 freeze
-            return RangeAction.FREEZE
-            
+            return RangeAction.STOP if str(out_of_range_action).lower().strip() == "stop" else RangeAction.FREEZE
         return RangeAction.OK
 
     def check_inventory_limits(
@@ -250,68 +167,50 @@ class RiskManager:
         short_pos_count: int = 0,
         hedge_enabled: bool = False,
     ) -> bool:
-        """Return whether a new order is allowed under inventory constraints."""
         if lot <= 0:
             return False
 
         eps = self.EPSILON
-        effective_net_vol = net_vol
-        if effective_net_vol is None:
-            effective_net_vol = (long_vol + pending_buy_vol) - (short_vol + pending_sell_vol)
         
+        # ✨ 关键修改点 5：前置并统一定义状态与中间变量，消除各分支下的冗余计算
+        is_buy = side == "buy"
+        total_long = long_vol + pending_buy_vol
+        total_short = short_vol + pending_sell_vol
+        
+        effective_net_vol = net_vol if net_vol is not None else (total_long - total_short)
+        new_net = effective_net_vol + lot if is_buy else effective_net_vol - lot
+
         # 单边持仓量限制检查
-        if side == "buy":
-            if max_long_vol is not None:
-                if (long_vol + pending_buy_vol + lot) > max_long_vol + eps:
-                    return False
-            if max_long_pos is not None:
-                if (long_pos_count + 1) > max_long_pos:
-                    return False
-        else:  # sell
-            if max_short_vol is not None:
-                if (short_vol + pending_sell_vol + lot) > max_short_vol + eps:
-                    return False
-            if max_short_pos is not None:
-                if (short_pos_count + 1) > max_short_pos:
-                    return False
-        
-        # 净持仓量限制检查
+        if is_buy:
+            if max_long_vol is not None and (total_long + lot) > max_long_vol + eps:
+                return False
+            if max_long_pos is not None and (long_pos_count + 1) > max_long_pos:
+                return False
+        else:
+            if max_short_vol is not None and (total_short + lot) > max_short_vol + eps:
+                return False
+            if max_short_pos is not None and (short_pos_count + 1) > max_short_pos:
+                return False
+
         if max_net_vol is None:
             return True
 
         cap = float(max_net_vol)
 
+        # ✨ 关键修改点 6：各模式校验直接复用已算好的 new_net、total_long 等变量，逻辑更平铺
         if mode == "neutral":
-            new_net = effective_net_vol + lot if side == "buy" else effective_net_vol - lot
-            # 如果当前已超限，只允许减少绝对值的操作
             if abs(effective_net_vol) > cap + eps:
                 return abs(new_net) < abs(effective_net_vol) - eps
             return abs(new_net) <= cap + eps
 
         if mode == "long":
-            total_long = long_vol + pending_buy_vol
-            if side == "buy":
+            if is_buy:
                 return (total_long + lot) <= cap + eps
-            else:
-                # 卖单会减少净多头，检查是否会变成净空头
-                new_net = effective_net_vol - lot
-                if not hedge_enabled:
-                    return False
-                if new_net < -eps:
-                    return False
-                return True
+            return hedge_enabled and new_net >= -eps
 
         if mode == "short":
-            total_short = short_vol + pending_sell_vol
-            if side == "sell":
+            if not is_buy:
                 return (total_short + lot) <= cap + eps
-            else:
-                # 买单会增加净多头，检查是否会变成净多头
-                new_net = effective_net_vol + lot
-                if not hedge_enabled:
-                    return False
-                if new_net > eps:
-                    return False
-                return True
+            return hedge_enabled and new_net <= eps
 
         return True

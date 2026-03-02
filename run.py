@@ -4,7 +4,7 @@ from core.logger import Logger
 from core.broker import MT5Broker
 from core.config import ConfigLoader
 from core.strategy.manager import StrategyManager
-from core.runtime.runner import Runner
+from core.runtime import Runner
 
 
 def parse_args(argv=None):
