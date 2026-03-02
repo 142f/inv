@@ -373,6 +373,8 @@ class GridStrategy(
         self._order_type = {}
         self._last_deal_time = self._stats["last_reset_time"]
         self._last_deal_ticket = 0
+        # [P-12] _index_orders 增量更新所需的上次 ticket 集合快照
+        self._last_order_tickets = None
 
     def _normalize_mode(self, mode):
         normalized = str(mode or "neutral").strip().lower()

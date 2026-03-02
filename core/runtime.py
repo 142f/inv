@@ -139,13 +139,18 @@ class DataFeed:
         if mode == "sma":
             return float(np.mean(tr[-period:]))
 
-        tr_list = tr.tolist()
-        current_atr = sum(tr_list[:period]) / period
+        # [P-11] 纯 NumPy 射量化 EMA/Wilder：用 dot 一次性计算最终标量结果
+        # final = y0*d^n + alpha * dot(tail, [d^(n-1), ..., d^0])
+        current_atr = float(np.mean(tr[:period]))
         alpha = 2.0 / (period + 1.0) if mode == "ema" else 1.0 / period
-
-        for i in range(period, len(tr_list)):
-            current_atr = (current_atr * (1.0 - alpha)) + (tr_list[i] * alpha)
-        return float(current_atr)
+        tail = tr[period:].astype(float)
+        n = len(tail)
+        if n == 0:
+            return current_atr
+        decay = 1.0 - alpha
+        # d^(n-1), d^(n-2), ..., d^0（每个 tail 元素对应的衰减权重）
+        decay_powers_rev = decay ** np.arange(n - 1, -1, -1)
+        return float(current_atr * (decay ** n) + alpha * np.dot(tail, decay_powers_rev))
 
     @staticmethod
     def _smooth_atr(raw_atr: float, last_value: float | None, smooth: float) -> float:

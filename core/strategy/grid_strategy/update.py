@@ -136,11 +136,28 @@ class GridUpdateMixin:
             my_positions = [p for p in positions if p.symbol == self.symbol and p.magic == self.magic] if positions else []
 
         self._index_orders(my_orders)
-            
+
+        # [P-02] O(N) 一次性预处理持仓聚合，后续全程引用缓存结果，避免约 9 次重复遍历
+        _float_profit = 0.0
+        _long_pos_count = 0
+        _short_pos_count = 0
+        for _p in my_positions:
+            _float_profit += _p.profit
+            if _p.type == mt5.POSITION_TYPE_BUY:
+                _long_pos_count += 1
+            else:
+                _short_pos_count += 1
+
+        # [P-09] 预计算 exposure，供 CAP 段与补单段共用，消除两次独立 _calc_exposure 调用
+        long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(
+            my_positions, my_orders
+        )
+        _pos_vol = long_vol + short_vol
+
         should_log_status = now - self._last_status_log_time > self._status_log_interval
         if should_log_status:
-            float_profit = sum(p.profit for p in my_positions)
-            pos_vol = sum(p.volume for p in my_positions)
+            float_profit = _float_profit
+            pos_vol = _pos_vol
             buy_orders = sum(len(v) for v in self.bid_orders.values())
             sell_orders = sum(len(v) for v in self.ask_orders.values())
             
@@ -211,9 +228,7 @@ class GridUpdateMixin:
         )
 
         if should_log_status and self.max_net_vol is not None and self.lot > 0:
-            long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(
-                my_positions, my_orders
-            )
+            # [P-09] 复用入口处已预计算的 exposure，无需重复调用 _calc_exposure
             liq_buffer = None
             try:
                 account = mt5.account_info()
@@ -341,7 +356,9 @@ class GridUpdateMixin:
         # A. TRIM (清理多余/超界挂单)
         if self.auto_trim:
             buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
-            target_set = set(target_buys) | set(target_sells)
+            # [P-08] 用 set + update 替代 set(a)|set(b)，避免创建两个中间集合再合并
+            target_set = set(target_buys)
+            target_set.update(target_sells)
             
             removed_tickets = set()
             for o in my_orders:
@@ -364,11 +381,15 @@ class GridUpdateMixin:
             if removed_tickets:
                 my_orders = [o for o in my_orders if o.ticket not in removed_tickets]
                 self._index_orders(my_orders)
+                # [P-09] 挂单集合变化时同步更新 exposure，其余情况复用入口缓存值
+                long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(
+                    my_positions, my_orders
+                )
 
         # B. 补单 (带库存风控)
-        long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(my_positions, my_orders)
-        long_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_BUY)
-        short_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_SELL)
+        # [P-02/P-09] 使用入口预计算的 exposure 和持仓计数，无需额外遍历
+        long_pos_count = _long_pos_count
+        short_pos_count = _short_pos_count
 
         mode_conflict = False
         if self.mode == "long":

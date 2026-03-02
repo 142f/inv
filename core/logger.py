@@ -205,7 +205,10 @@ class Logger:
         throttle_sec = cls._throttle_seconds  # 已确保有值
         if throttle_sec > 0 and action in cls.NOISY_ACTIONS:
             now = time.monotonic()
-            key = (str_symbol, action, str(message), level_lower)  # message 已为字符串
+            # [P-07] 用截断前 80 字符替代完整 message 字符串作为 key，
+            # 大幅减少 _last_emit_ts 字典的内存占用和哈希运算开销
+            msg_key = message[:80] if len(message) > 80 else message
+            key = (str_symbol, action, msg_key, level_lower)
             last = cls._last_emit_ts.get(key)
             if last is not None and (now - last) < throttle_sec:
                 return

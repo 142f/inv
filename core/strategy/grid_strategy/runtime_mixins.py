@@ -15,6 +15,9 @@ from core.logger import Logger
 
 _MARKET_TICK_MAX_AGE_SECONDS = 600
 
+# [P-06] _order_profit / _order_type 字典 FIFO 容量上限
+_MAX_ORDER_HISTORY = 20_000
+
 ALLOWED_FILLING_MODES = (
     mt5.ORDER_FILLING_FOK,
     mt5.ORDER_FILLING_IOC,
@@ -218,6 +221,16 @@ class GridStateStatsMixin:
         else:
             if is_positive:
                 self._adjust_profitable_stats(order_type, new_total, 1)
+
+        # [P-06] 防止长期运行积累数十万条目：超出上限时 FIFO 驱逐最旧条目
+        # Python 3.7+ dict 保持插入顺序，iter() 返回最旧键
+        if len(self._order_profit) > _MAX_ORDER_HISTORY:
+            try:
+                oldest_key = next(iter(self._order_profit))
+                del self._order_profit[oldest_key]
+                self._order_type.pop(oldest_key, None)
+            except StopIteration:
+                pass
 
     def _update_stats(self):
         """增量更新新成交流水的统计信息。"""

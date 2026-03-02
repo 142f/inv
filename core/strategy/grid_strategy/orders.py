@@ -5,6 +5,10 @@ from core.logger import Logger
 from .runtime_mixins import iter_filling_candidates
 
 class GridOrdersMixin:
+    # [P-01] 设为 True 以开启 order_check 预检（DEBUG 用途）；
+    # 默认关闭以减少约 50% 的 MT5 API 调用开销。
+    _DEBUG_ORDER_CHECK = False
+
     def _order_check(self, request):
         request = self._prepare_request(request)
         if request is None:
@@ -35,16 +39,17 @@ class GridOrdersMixin:
         for mode in iter_filling_candidates(self.filling_mode):
             req = dict(request)
             req['type_filling'] = mode
-            check = self._order_check(req)
-            # [修复 L-10] 利用 order_check 结果提前拦截不可恢复的错误，避免发出必然失败的订单请求。
-            # retcode=0 表示预检通过；retcode=10030 是 filling 模式不兼容（继续尝试下一种）；
-            # 其他非零错误（如余额不足 10019）说明订单本身不合法，直接中止。
-            if check is not None:
-                check_rc = getattr(check, "retcode", 0)
-                if check_rc not in (0, 10030):
-                    Logger.log(self.symbol, "WARN",
-                        f"order_check 预检拒绝 RetCode={check_rc} {getattr(check, 'comment', '')}，中止下单")
-                    return None
+            # [P-01] order_check 仅在 DEBUG 模式下调用，减少约 50% 的 MT5 API 开销。
+            # 不可恢复错误（如余额不足）会由 _dispatch_request 返回的 retcode 捕获，
+            # 调用方 _place_limit_order 会通过 _handle_order_error 统一处理。
+            if self._DEBUG_ORDER_CHECK:
+                check = self._order_check(req)
+                if check is not None:
+                    check_rc = getattr(check, "retcode", 0)
+                    if check_rc not in (0, 10030):
+                        Logger.log(self.symbol, "WARN",
+                            f"order_check 预检拒绝 RetCode={check_rc} {getattr(check, 'comment', '')}，中止下单")
+                        return None
             last_result = self._dispatch_request(req)
             if last_result is None:
                 return None
@@ -59,6 +64,11 @@ class GridOrdersMixin:
         return last_result
 
     def _index_orders(self, my_orders):
+        # [P-12] 仅在挂单集合（ticket 集）实际变化时重建索引，避免每 tick 全量重建
+        new_tickets = frozenset(o.ticket for o in my_orders)
+        if getattr(self, '_last_order_tickets', None) == new_tickets:
+            return
+        self._last_order_tickets = new_tickets
         self.bid_orders = {}
         self.ask_orders = {}
         for o in my_orders:
@@ -85,12 +95,7 @@ class GridOrdersMixin:
                 if (is_buy and sl >= price) or ((not is_buy) and sl <= price):
                     sl = None
             vol = self._normalize_volume(self.lot)
-            atr_coef = 1.0
-            if self.use_atr and self.base_step:
-                atr_coef = self.step / self.base_step
-            price_width = max(12, self.digits + 9)
-
-            sl_str = f"{sl:>{price_width}.{self.digits}f}" if sl is not None else f"{'--':>{price_width}}"
+            # [P-10] atr_coef / price_width / sl_str 延迟到真正需要输出日志时才计算
 
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
@@ -108,10 +113,13 @@ class GridOrdersMixin:
 
             if self._action_collector is not None:
                 self._queue_action(request)
+                _pw = max(12, self.digits + 9)
+                _ac = (self.step / self.base_step) if (self.use_atr and self.base_step) else 1.0
+                _sl = f"{sl:>{_pw}.{self.digits}f}" if sl is not None else f"{'--':>{_pw}}"
                 Logger.log(
                     self.symbol,
                     "ORDER_SENT",
-                    f"{label} LIMIT | Price={price:>{price_width}.{self.digits}f} TP={tp:>{price_width}.{self.digits}f} SL={sl_str} | Magic={self.magic:04d} | ATR={atr_coef:.2f}x (queued)",
+                    f"{label} LIMIT | Price={price:>{_pw}.{self.digits}f} TP={tp:>{_pw}.{self.digits}f} SL={_sl} | Magic={self.magic:04d} | ATR={_ac:.2f}x (queued)",
                 )
                 return True
 
@@ -146,20 +154,26 @@ class GridOrdersMixin:
                         Logger.log(self.symbol, "ERROR", f"order_send returned None after requote. Error: {last_error}")
                         return None
                     if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+                        _pw = max(12, self.digits + 9)
+                        _ac = (self.step / self.base_step) if (self.use_atr and self.base_step) else 1.0
+                        _sl = f"{sl:>{_pw}.{self.digits}f}" if sl is not None else f"{'--':>{_pw}}"
                         Logger.log(
                             self.symbol,
                             "ORDER_SENT",
-                            f"{label} LIMIT | Price={price:>{price_width}.{self.digits}f} TP={tp:>{price_width}.{self.digits}f} SL={sl_str} | Magic={self.magic:04d} | ATR={atr_coef:.2f}x (retry)",
+                            f"{label} LIMIT | Price={price:>{_pw}.{self.digits}f} TP={tp:>{_pw}.{self.digits}f} SL={_sl} | Magic={self.magic:04d} | ATR={_ac:.2f}x (retry)",
                         )
                         return result.order
 
                 self._handle_order_error(result.retcode, getattr(result, "comment", ""), price)
                 return None
 
+            _pw = max(12, self.digits + 9)
+            _ac = (self.step / self.base_step) if (self.use_atr and self.base_step) else 1.0
+            _sl = f"{sl:>{_pw}.{self.digits}f}" if sl is not None else f"{'--':>{_pw}}"
             Logger.log(
                 self.symbol,
                 "ORDER_SENT",
-                f"{label} LIMIT | Price={price:>{price_width}.{self.digits}f} TP={tp:>{price_width}.{self.digits}f} SL={sl_str} | Magic={self.magic:04d} | ATR={atr_coef:.2f}x",
+                f"{label} LIMIT | Price={price:>{_pw}.{self.digits}f} TP={tp:>{_pw}.{self.digits}f} SL={_sl} | Magic={self.magic:04d} | ATR={_ac:.2f}x",
             )
             return result.order
 
@@ -259,20 +273,25 @@ class GridOrdersMixin:
         Returns:
             tuple: (long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol)
         """
-        # 持仓量计算
-        long_vol = sum(p.volume for p in my_positions if p.type == mt5.POSITION_TYPE_BUY)
-        short_vol = sum(p.volume for p in my_positions if p.type == mt5.POSITION_TYPE_SELL)
+        # [P-03] 单次遍历同时累计所有维度，替代原来 4 次独立生成器遍历
+        long_vol = 0.0
+        short_vol = 0.0
+        for p in my_positions:
+            if p.type == mt5.POSITION_TYPE_BUY:
+                long_vol += p.volume
+            else:
+                short_vol += p.volume
 
         # 挂单量计算 - 使用 volume_current（当前剩余量）而非 volume_initial（初始量）
         # 因为部分成交的订单应该只计算剩余部分
-        pending_buy_vol = sum(
-            getattr(o, 'volume_current', o.volume_initial) 
-            for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT
-        )
-        pending_sell_vol = sum(
-            getattr(o, 'volume_current', o.volume_initial) 
-            for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT
-        )
+        pending_buy_vol = 0.0
+        pending_sell_vol = 0.0
+        for o in my_orders:
+            vol = getattr(o, 'volume_current', o.volume_initial)
+            if o.type == mt5.ORDER_TYPE_BUY_LIMIT:
+                pending_buy_vol += vol
+            elif o.type == mt5.ORDER_TYPE_SELL_LIMIT:
+                pending_sell_vol += vol
 
         # 净持仓 = (多头 + 待买) - (空头 + 待卖)
         net_vol = (long_vol + pending_buy_vol) - (short_vol + pending_sell_vol)
