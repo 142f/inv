@@ -145,6 +145,7 @@ class MT5Broker(BrokerBase):
         return value
 
     def initialize(self) -> bool:
+        # 解密环境变量
         acc_id_str = self._decrypt_env("MT5_ACCOUNT_ID", os.getenv("MT5_ACCOUNT_ID"))
         pwd = self._decrypt_env("MT5_PASSWORD", os.getenv("MT5_PASSWORD"))
         srv = self._decrypt_env("MT5_SERVER", os.getenv("MT5_SERVER"))
@@ -157,62 +158,74 @@ class MT5Broker(BrokerBase):
             init_params["path"] = mt5_path
 
         with self._lock:
-            # 1. Initialize Terminal
-            if not mt5.initialize(**init_params):
-                if mt5_path and not mt5.initialize():
-                    Logger.log("SYSTEM", "ERROR", f"MT5 Init Failed (Path & Default): {mt5.last_error()}")
-                    return False
-                elif not mt5_path:
-                    Logger.log("SYSTEM", "ERROR", f"MT5 Init Failed: {mt5.last_error()}")
-                    return False
+            # 1. 初始化终端（简化尝试逻辑）
+            init_success = mt5.initialize(**init_params)
+            if not init_success and mt5_path:
+                # 如果指定路径失败，尝试默认路径（与原逻辑一致）
+                init_success = mt5.initialize()
+            if not init_success:
+                Logger.log("SYSTEM", "ERROR", f"MT5 初始化失败: {mt5.last_error()}")
+                return False
 
+            # 检查终端信息是否可用
             if not mt5.terminal_info():
-                Logger.log("SYSTEM", "ERROR", "MT5 Initialized but Terminal Info unavailable")
+                Logger.log("SYSTEM", "ERROR", "MT5 初始化成功但终端信息不可用")
                 mt5.shutdown()
                 return False
-            
+
             self._connected = True
 
-            # 2. Verify Account Mode & Login
-            current_idx = mt5.account_info()
-            if current_idx:
-                self._log_account_mode(current_idx)
+            # 2. 获取当前账户信息（第一次调用）
+            current_acc = mt5.account_info()
+            need_login = False
 
+            # 决定是否需要登录
             if acc_id != 0:
-                if current_idx and current_idx.login == acc_id:
-                    Logger.log("SYSTEM", "INFO", f"检测到终端已登录目标账号 {acc_id}")
+                if current_acc and current_acc.login == acc_id:
+                    Logger.log("SYSTEM", "INFO", f"终端已登录目标账号 {acc_id}")
                 else:
-                    Logger.log("SYSTEM", "INFO", f"正在尝试登录账号 {acc_id}...")
-                    if not mt5.login(acc_id, password=pwd, server=srv):
-                        Logger.log("SYSTEM", "ERROR", f"登录失败: {mt5.last_error()} (Account: {acc_id})")
-                        self.shutdown()
-                        return False
+                    need_login = True
             else:
-                if current_idx:
-                     Logger.log("SYSTEM", "WARN", f"未配置指定账号, 使用当前终端账号: {current_idx.login}")
+                if current_acc:
+                    Logger.log("SYSTEM", "WARN", f"未指定账号，使用当前终端账号: {current_acc.login}")
                 else:
-                     Logger.log("SYSTEM", "ERROR", "未配置账号且当前终端未登录")
-                     self.shutdown()
-                     return False
+                    Logger.log("SYSTEM", "ERROR", "未配置账号且当前终端未登录")
+                    self.shutdown()
+                    return False
 
-            final_acc = mt5.account_info()
-            if final_acc:
-                Logger.log("SYSTEM", "INFO", f"MT5就绪. 账号:{final_acc.login} @ {final_acc.server}")
-                return True
-            
-            return False
+            # 执行登录（如果需要）
+            if need_login:
+                Logger.log("SYSTEM", "INFO", f"正在尝试登录账号 {acc_id}...")
+                if not mt5.login(acc_id, password=pwd, server=srv):
+                    Logger.log("SYSTEM", "ERROR", f"登录失败: {mt5.last_error()} (Account: {acc_id})")
+                    self.shutdown()
+                    return False
+                # 登录成功后重新获取账户信息（第二次调用）
+                final_acc = mt5.account_info()
+            else:
+                # 无需登录，直接使用当前账户信息
+                final_acc = current_acc
 
-    def _log_account_mode(self, account_info: Any) -> None:
-        mode_str = "Unknown"
-        if account_info.margin_mode == mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:
-            mode_str = "HEDGING (对冲模式)"
-        elif account_info.margin_mode == mt5.ACCOUNT_MARGIN_MODE_RETAIL_NETTING:
-            mode_str = "NETTING (净额模式)"
-        else:
-            mode_str = f"Mode {account_info.margin_mode}"
-        Logger.log("SYSTEM", "INFO", f"账户模式: {mode_str}")
-        if account_info.margin_mode == mt5.ACCOUNT_MARGIN_MODE_RETAIL_NETTING:
-            Logger.log("SYSTEM", "WARN", "注意: 当前策略非 HEDGING 设计，在 NETTING 模式下可能无法正确管理多层网格持仓。")
+            # 3. 最终校验并记录日志
+            if not final_acc:
+                Logger.log("SYSTEM", "ERROR", "无法获取有效账户信息")
+                self.shutdown()
+                return False
+
+            # 合并账户模式日志（原 _log_account_mode 内联）
+            mode_map = {
+                mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING: "HEDGING (对冲模式)",
+                mt5.ACCOUNT_MARGIN_MODE_RETAIL_NETTING: "NETTING (净额模式)",
+            }
+            mode_str = mode_map.get(final_acc.margin_mode, f"模式 {final_acc.margin_mode}")
+            Logger.log("SYSTEM", "INFO", f"账户模式: {mode_str}")
+            if final_acc.margin_mode == mt5.ACCOUNT_MARGIN_MODE_RETAIL_NETTING:
+                Logger.log("SYSTEM", "WARN", "当前策略非 HEDGING 设计，在 NETTING 模式下可能无法正确管理多层网格持仓。")
+
+            Logger.log("SYSTEM", "INFO", f"MT5 就绪. 账号:{final_acc.login} @ {final_acc.server}")
+            return True
+
+    # _log_account_mode 方法已移除，功能内联到 initialize 中
 
     def shutdown(self) -> None:
         with self._lock:
@@ -224,18 +237,17 @@ class MT5Broker(BrokerBase):
     def ensure_symbol(self, symbol: str) -> bool:
         if symbol in self._subscribed_symbols:
             return True
-        
+
         with self._lock:
-            # Check availability first
             info = mt5.symbol_info(symbol)
             if info and info.select:
                 self._subscribed_symbols.add(symbol)
                 return True
-            
+
             if mt5.symbol_select(symbol, True):
                 self._subscribed_symbols.add(symbol)
                 return True
-            
+
             Logger.log("SYSTEM", "ERROR", f"Symbol select failed: {symbol}")
             return False
 

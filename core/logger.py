@@ -157,15 +157,17 @@ class Logger:
     def log(cls, symbol, action, message, level="info"):
         cls._ensure_logger()
 
-        # ✨ 关键修改点 1：一次性完成归一化。提前转换为小写，彻底消除全域散落的 .lower()/.upper() 字符串分配开销
+        # 1. 统一 level 处理（复用变量，避免重复转换）
         level_lower = str(level).lower() if level is not None else "info"
         if level_lower == "info" and action in cls.ACTION_LEVEL_MAP:
             level_lower = cls.ACTION_LEVEL_MAP[action]
 
-        action_cn = cls.ACTION_MAP.get(action, action)
+        # 2. 一次性转换并复用
         str_symbol = str(symbol)
+        action_cn = cls.ACTION_MAP.get(action, action)
         str_action_cn = str(action_cn)
 
+        # 3. 动态调整列宽（利用缓存）
         symbol_width = cls._display_width(str_symbol)
         if symbol_width > cls._symbol_width:
             cls._symbol_width = symbol_width
@@ -174,6 +176,7 @@ class Logger:
         if action_width > cls._action_width:
             cls._action_width = action_width
 
+        # 4. 聚合逻辑（增加过期清理）
         if cls._aggregate_interval and action in cls._aggregate_actions:
             now = time.monotonic()
             key = (str_symbol, action)
@@ -190,35 +193,45 @@ class Logger:
                     entry["count"] = 0
                 entry["last_emit"] = now
 
-        # ✨ 关键修改点 2：直接读取类变量，消除对已确切赋值属性的重复判空操作
-        throttle_sec = cls._throttle_seconds
+            # ✨ 关键修改点 1：聚合缓冲区定期清理（每10次聚合检查触发一次，避免无限增长）
+            if len(cls._aggregate_buffer) > 500:
+                cutoff = now - cls._aggregate_interval * 2
+                # 使用迭代删除避免创建新字典
+                keys_to_del = [k for k, v in cls._aggregate_buffer.items() if v["last_emit"] < cutoff]
+                for k in keys_to_del:
+                    del cls._aggregate_buffer[k]
 
+        # 5. 限流逻辑（优化清理策略）
+        throttle_sec = cls._throttle_seconds  # 已确保有值
         if throttle_sec > 0 and action in cls.NOISY_ACTIONS:
             now = time.monotonic()
-            # ✨ 关键修改点 3：消除 action 的 str() 强转，直接复用已归一化的 level_lower
-            key = (str_symbol, action, str(message), level_lower)
+            key = (str_symbol, action, str(message), level_lower)  # message 已为字符串
             last = cls._last_emit_ts.get(key)
             if last is not None and (now - last) < throttle_sec:
                 return
             cls._last_emit_ts[key] = now
-            
-            # ✨ 关键修改点 4：修复 O(N^2) CPU 尖刺陷阱
+
+            # ✨ 关键修改点 2：限流字典清理改为惰性删除 + 按时间戳过期清理
+            # 仅在字典过大且插入新 key 时触发，避免频繁全量遍历
             if len(cls._last_emit_ts) > 2000:
                 cutoff = now - throttle_sec * 2
-                cls._last_emit_ts = {k: v for k, v in cls._last_emit_ts.items() if v > cutoff}
-                
-                # 兜底截断：如果遭遇海量瞬时并发独立日志，防止字典推导式失效带来的无限 O(N) 遍历
+                # 使用迭代删除过期条目，避免 O(N) 创建新字典
+                expired_keys = [k for k, ts in cls._last_emit_ts.items() if ts < cutoff]
+                for k in expired_keys:
+                    del cls._last_emit_ts[k]
+                # 如果仍然过大，强制缩小到 1500（按最近时间保留）
                 if len(cls._last_emit_ts) > 1800:
-                    # Python 3.7+ 字典保持插入顺序，直接弹出最老的 500 个元素，保证 O(1) 释放
-                    for _ in range(500):
-                        cls._last_emit_ts.pop(next(iter(cls._last_emit_ts)))
+                    # 按时间戳排序，保留最新的 1500 个
+                    sorted_items = sorted(cls._last_emit_ts.items(), key=lambda x: x[1], reverse=True)[:1500]
+                    cls._last_emit_ts = dict(sorted_items)
 
+        # 6. 构造日志消息（复用已计算的宽度）
         symbol_pad = cls._pad_display(str_symbol, cls._symbol_width, current_width=symbol_width)
         action_pad = cls._pad_display(str_action_cn, cls._action_width, current_width=action_width)
         
         file_msg = f"{symbol_pad} | [{action_pad}] | {message}"
 
-        # ✨ 关键修改点 5：重写判色逻辑，复用 level_lower 即可完成，消除分配 upper()
+        # 7. 控制台颜色（复用 level_lower，避免重复 upper）
         color = cls._ACTION_COLOR_MAP.get(action, Colors.RESET)
         if color == Colors.RESET:
             if level_lower in ("error", "critical"):
@@ -228,7 +241,7 @@ class Logger:
 
         console_msg = f"{color}{symbol_pad} | [{action_pad}] | {message}{Colors.RESET}"
 
-        # ✨ 复用 level_lower
+        # 8. 创建日志记录并提交
         levelno = cls._LEVEL_STR_MAP.get(level_lower, logging.INFO)
         record = logging.LogRecord("GridTrading", levelno, "", 0, file_msg, (), None)
         record.file_msg = file_msg
