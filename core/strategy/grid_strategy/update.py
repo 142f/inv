@@ -172,10 +172,6 @@ class GridUpdateMixin:
         # --- Fixed Grid: Initialize anchor to min_price once ---
         if self.anchor is None:
              self.anchor = self.min_price
-        
-        # Disable dynamic recentering for Fixed Grid mode
-        # self._init_anchor_if_needed(mid_price)
-        # self._maybe_recenter(mid_price)
 
         # ========== HEDGE MANAGER ==========
         if self.hedge_enabled and self.mode == "long" and self.max_net_vol is not None:

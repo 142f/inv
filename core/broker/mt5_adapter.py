@@ -5,13 +5,55 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import os
 import threading
+from pathlib import Path
 from typing import Any
 
 import MetaTrader5 as mt5
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 
 from core.logger import Logger
-from core.security import Security
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+# ── 凭证加解密（合并自 security.py）─────────────────────────────────────────────
+
+class Security:
+    def __init__(self, key_file: str = ".secret.key"):
+        self.key_file = _PROJECT_ROOT / key_file
+        self.key = self._load_or_create_key()
+        self.cipher = Fernet(self.key)
+
+    def _load_or_create_key(self):
+        if self.key_file.exists():
+            with open(self.key_file, "rb") as f:
+                return f.read()
+
+        key = Fernet.generate_key()
+        with open(self.key_file, "wb") as f:
+            f.write(key)
+
+        try:
+            os.chmod(self.key_file, 0o600)
+        except Exception:
+            pass
+
+        return key
+
+    def encrypt(self, text):
+        if not text:
+            return ""
+        return self.cipher.encrypt(str(text).encode()).decode()
+
+    def decrypt(self, encrypted_text):
+        if not encrypted_text:
+            return ""
+        try:
+            return self.cipher.decrypt(encrypted_text.encode()).decode()
+        except Exception as exc:
+            Logger.log("SYSTEM", "ERROR", f"解密失败({type(exc).__name__}): {exc!r}")
+            return None
 
 
 class BrokerBase(ABC):

@@ -106,7 +106,6 @@ class GridStrategy(
         max_short_vol=None,
         max_net_vol=None,
         max_spread_points=None,
-        extreme_mode="freeze",
         extreme_cooldown=30,
         max_new_orders_per_update=10,
         hedge_enabled=False,
@@ -178,7 +177,6 @@ class GridStrategy(
             max_short_vol=max_short_vol,
             max_net_vol=max_net_vol,
             max_spread_points=max_spread_points,
-            extreme_mode=extreme_mode,
             extreme_cooldown=extreme_cooldown,
             max_new_orders_per_update=max_new_orders_per_update,
         )
@@ -310,7 +308,6 @@ class GridStrategy(
         max_short_vol,
         max_net_vol,
         max_spread_points,
-        extreme_mode,
         extreme_cooldown,
         max_new_orders_per_update,
     ):
@@ -324,7 +321,6 @@ class GridStrategy(
         self.max_short_vol = as_optional(max_short_vol, float)
         self.max_net_vol = as_optional(max_net_vol, float)
         self.max_spread_points = as_optional(max_spread_points, float)
-        self.extreme_mode = extreme_mode
         self.extreme_cooldown = float(extreme_cooldown)
         self.max_new_orders_per_update = int(max_new_orders_per_update)
 
@@ -366,7 +362,6 @@ class GridStrategy(
     def _init_runtime_state(self):
         self._last_atr_value = None
         self._last_atr_time = 0
-        self._last_tick_time = 0
         self._last_adapt_bar_time = 0
         self._last_status_log_time = 0
         self._status_log_interval = 60

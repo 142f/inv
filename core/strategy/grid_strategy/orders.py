@@ -183,31 +183,38 @@ class GridOrdersMixin:
     def clear_old_orders(self):
         """启动时清理旧网格挂单，保留价格最近的window数量个订单"""
         orders = self._mt5_call(mt5.orders_get, symbol=self.symbol)
-            
-        if orders:
-            my_orders = [o for o in orders if o.magic == self.magic]
-            tick = self._get_tick()
-            if tick is None:
+        my_orders = [o for o in orders if o.magic == self.magic] if orders else []
+
+        if not my_orders:
+            Logger.log(self.symbol, "CLEANUP", f"Magic={self.magic:04d} | 无历史挂单，跳过清理")
+            return
+
+        tick = self._get_tick()
+        if tick is None:
+            return
+
+        buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
+
+        # 过滤出不在保留列表中的订单
+        buy_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT and o not in buy_to_keep]
+        sell_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT and o not in sell_to_keep]
+
+        # 删除超出窗口的订单
+        for o in buy_to_remove + sell_to_remove:
+            res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
+            if res is None:
+                continue
+            if res.retcode == 10018: # MARKET_CLOSED
+                Logger.log(self.symbol, "WARN", "市场休市，无法撤单，暂停运行 5 分钟")
+                self.pause_until = time.time() + 300
                 return
-                
-            buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
-            
-            # 过滤出不在保留列表中的订单
-            buy_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT and o not in buy_to_keep]
-            sell_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT and o not in sell_to_keep]
-            
-            # 删除超出窗口的订单
-            for o in buy_to_remove + sell_to_remove:
-                res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
-                if res is None:
-                    continue
-                if res.retcode == 10018: # MARKET_CLOSED
-                    Logger.log(self.symbol, "WARN", "市场休市，无法撤单，暂停运行 5 分钟")
-                    self.pause_until = time.time() + 300
-                    return
-            
-            if buy_to_remove or sell_to_remove:
-                Logger.log(self.symbol, "CLEANUP", f"历史挂单已清理，保留买单{len(buy_to_keep)}个，保留卖单{len(sell_to_keep)}个")
+
+        Logger.log(
+            self.symbol,
+            "CLEANUP",
+            f"Magic={self.magic:04d} | 历史挂单清理完成 | 删除买单{len(buy_to_remove)}个 卖单{len(sell_to_remove)}个"
+            f"，保留买单{len(buy_to_keep)}个 卖单{len(sell_to_keep)}个",
+        )
 
     # ------------------------
     # Risk / caps helpers

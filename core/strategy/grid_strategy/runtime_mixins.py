@@ -125,7 +125,6 @@ class GridStateStatsMixin:
             'pause_until': self.pause_until,
             'enabled': self.enabled,
             '_last_atr_value': self._last_atr_value,
-            '_last_tick_time': self._last_tick_time,
             '_last_atr_time': self._last_atr_time,
             'anchor': self.anchor,
             '_last_recenter_time': self._last_recenter_time,
@@ -140,7 +139,6 @@ class GridStateStatsMixin:
             self.pause_until = state.get('pause_until', self.pause_until)
             self.enabled = state.get('enabled', self.enabled)
             self._last_atr_value = state.get('_last_atr_value', self._last_atr_value)
-            self._last_tick_time = state.get('_last_tick_time', self._last_tick_time)
             self._last_atr_time = state.get('_last_atr_time', self._last_atr_time)
             self.anchor = state.get('anchor', self.anchor)
             self._last_recenter_time = state.get('_last_recenter_time', self._last_recenter_time)
@@ -330,36 +328,3 @@ class GridSymbolMixin:
         precision = getattr(self, "vol_precision", 2)
         return float(round(max(self.vol_min, min(self.vol_max, vol)), precision))
 
-    def _get_grid_level(self, price, anchor):
-        """Snap price to the nearest grid line relative to anchor."""
-        if self.step <= 0:
-            return price
-        k = round((price - anchor) / self.step)
-        return anchor + k * self.step
-
-    def _init_anchor_if_needed(self, mid_price):
-        if self.anchor is None:
-            if self.step <= 0:
-                self.anchor = self._normalize_price(mid_price)
-                return
-            base0 = round(mid_price / self.step) * self.step
-            self.anchor = self._normalize_price(base0)
-            Logger.log(self.symbol, "INIT", f"Anchor Initialized | Price={self.anchor:.{self.digits}f}")
-
-    def _maybe_recenter(self, mid_price):
-        """Trigger recenter when drift >= recenter_steps*step and cooldown elapsed."""
-        if self.step <= 0 or self.anchor is None:
-            return False
-        now = time.time()
-        if now - self._last_recenter_time < self.recenter_cooldown:
-            return False
-
-        drift_steps = (mid_price - self.anchor) / self.step
-        if abs(drift_steps) < self.recenter_steps:
-            return False
-
-        new_anchor = self._get_grid_level(mid_price, self.anchor)
-        self.anchor = self._normalize_price(new_anchor)
-        self._last_recenter_time = now
-        Logger.log(self.symbol, "RECENTER", f"Anchor Shifted | New={self.anchor:.{self.digits}f} MidPrice={mid_price:.{self.digits}f}")
-        return True
