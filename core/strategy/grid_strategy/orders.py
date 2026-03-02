@@ -35,15 +35,28 @@ class GridOrdersMixin:
         for mode in iter_filling_candidates(self.filling_mode):
             req = dict(request)
             req['type_filling'] = mode
-            self._order_check(req)
+            check = self._order_check(req)
+            # [修复 L-10] 利用 order_check 结果提前拦截不可恢复的错误，避免发出必然失败的订单请求。
+            # retcode=0 表示预检通过；retcode=10030 是 filling 模式不兼容（继续尝试下一种）；
+            # 其他非零错误（如余额不足 10019）说明订单本身不合法，直接中止。
+            if check is not None:
+                check_rc = getattr(check, "retcode", 0)
+                if check_rc not in (0, 10030):
+                    Logger.log(self.symbol, "WARN",
+                        f"order_check 预检拒绝 RetCode={check_rc} {getattr(check, 'comment', '')}，中止下单")
+                    return None
             last_result = self._dispatch_request(req)
             if last_result is None:
                 return None
             if last_result.retcode != 10030:
                 return last_result
 
-        self._order_check(request)
-        return self._dispatch_request(request)
+        # [修复 L-03] 所有 filling 模式均返回 10030（不支持的填充方式）时，
+        # 直接返回最后一次结果而非重发不含 type_filling 的请求（必然再次失败）。
+        Logger.log(self.symbol, "WARN",
+            f"All filling modes rejected (10030) for price={request.get('price')} "
+            f"type={request.get('type')}; giving up.")
+        return last_result
 
     def _index_orders(self, my_orders):
         self.bid_orders = {}
@@ -110,7 +123,22 @@ class GridOrdersMixin:
 
             if result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
                 if result.retcode == 10004:  # REQUOTE
-                    Logger.log(self.symbol, "WARN", "Requote, retrying...")
+                    # [修复 L-11] 重试前刷新 tick 并校验价格仍与市场保持合法距离，
+                    # 避免在剧烈行情下用旧价格反复 requote。
+                    fresh_tick = self._get_tick()
+                    if fresh_tick is None or fresh_tick.bid <= 0:
+                        Logger.log(self.symbol, "WARN", "Requote 后无法获取最新 tick，放弃下单")
+                        return None
+                    min_dist = max(self.stop_level, self.point * 10)
+                    too_close = (
+                        (is_buy and (fresh_tick.ask - price) < min_dist) or
+                        (not is_buy and (price - fresh_tick.bid) < min_dist)
+                    )
+                    if too_close:
+                        Logger.log(self.symbol, "WARN",
+                            f"Requote 后价格 {price:.{self.digits}f} 距市场过近 (<{min_dist:.{self.digits}f})，放弃下单")
+                        return None
+                    Logger.log(self.symbol, "WARN", "Requote，已确认价格合法，重试中...")
                     time.sleep(0.1)
                     result = self._send_with_fillings(request)
                     if result is None:
@@ -195,9 +223,11 @@ class GridOrdersMixin:
 
         buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
 
-        # 过滤出不在保留列表中的订单
-        buy_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT and o not in buy_to_keep]
-        sell_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT and o not in sell_to_keep]
+        # [修复 L-08] 改用 ticket 集合做 O(1) 查找，避免依赖对象身份比较（可能误判）
+        buy_keep_tickets = {o.ticket for o in buy_to_keep}
+        sell_keep_tickets = {o.ticket for o in sell_to_keep}
+        buy_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT and o.ticket not in buy_keep_tickets]
+        sell_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT and o.ticket not in sell_keep_tickets]
 
         # 删除超出窗口的订单
         for o in buy_to_remove + sell_to_remove:

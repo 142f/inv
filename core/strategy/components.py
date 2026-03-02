@@ -136,7 +136,11 @@ class RiskManager:
         if max_spread_points is None or max_spread_points <= 0 or point <= 0:
             return SpreadCheck(False, 0.0, 0.0)
         spread = ask - bid
-        if spread < 0 or spread > max_spread_points * point:
+        # [修复 L-04] 负点差（ask < bid）属于 tick 数据异常，与真实点差过大性质不同。
+        # 异常 tick 不触发极端冷却，直接放行让上层的 bid<=0 守卫或市场开盘检查处理。
+        if spread < 0:
+            return SpreadCheck(False, spread, 0.0)
+        if spread > max_spread_points * point:
             return SpreadCheck(True, spread, now + extreme_cooldown)
         return SpreadCheck(False, spread, 0.0)
 

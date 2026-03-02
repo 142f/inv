@@ -209,7 +209,11 @@ class StrategyUpdater:
         step = cfg.get("step")
         if step is not None:
             new_step = float(step)
-            if new_step != strategy.step:
+            # [修复 L-09] 拒绝 step <= 0，防止下游出现除零错误或负数网格
+            if new_step <= 0:
+                Logger.log(strategy.symbol, "CONFIG_ERROR",
+                    f"step={new_step} 必须为正数，已忽略该配置项")
+            elif new_step != strategy.step:
                 strategy.step = strategy.base_step = new_step
 
         tp_dist = cfg.get("tp_dist")
@@ -238,10 +242,13 @@ class StrategyUpdater:
         min_p = cfg.get("min_p")
         if min_p is not None:
             strategy.min_price = min_p
+            # [修复 L-06] 热更新时同步刷新硬边界，adaptive 的 clamp 基准随之更新。
+            strategy._user_min_price = float(min_p)
 
         max_p = cfg.get("max_p")
         if max_p is not None:
             strategy.max_price = max_p
+            strategy._user_max_price = float(max_p)
 
         buy_window = cfg.get("buy_window")
         if buy_window is not None:

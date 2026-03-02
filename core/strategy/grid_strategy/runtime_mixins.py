@@ -1,15 +1,16 @@
-﻿"""Runtime mixins for grid strategy: base MT5 calls, symbol info, and state/stats."""
+﻿"""运行时混入组件：MT5基础调用、品种信息及状态/统计管理。"""
 
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 import MetaTrader5 as mt5
 
 from core.logger import Logger
 
 # ---------------------------------------------------------------------------
-# Module-level helpers (originally in runtime.py)
+# 模块级辅助函数
 # ---------------------------------------------------------------------------
 
 _MARKET_TICK_MAX_AGE_SECONDS = 600
@@ -64,22 +65,22 @@ class QueuedResult:
 
 
 # ---------------------------------------------------------------------------
-# GridRuntimeMixin (originally in runtime.py)
+# GridRuntimeMixin
 # ---------------------------------------------------------------------------
 
 class GridRuntimeMixin:
     def _mt5_call(self, func, *args, **kwargs):
-        """Wrap an MT5 API call with the shared lock when available."""
-        def _execute():
-            # order_check and order_send require a plain dict argument
+        """包装 MT5 API 调用，安全接入共享锁。"""
+        # [优化]：展平执行逻辑，剔除 `_execute` 内部函数的动态分配，降低堆内存碎片与函数调用栈深度。
+        if self.lock:
+            with self.lock:
+                if func in (mt5.order_check, mt5.order_send) and args and isinstance(args[0], dict):
+                    return func(args[0])
+                return func(*args, **kwargs)
+        else:
             if func in (mt5.order_check, mt5.order_send) and args and isinstance(args[0], dict):
                 return func(args[0])
             return func(*args, **kwargs)
-
-        if self.lock:
-            with self.lock:
-                return _execute()
-        return _execute()
 
     def _get_tick(self):
         return self._mt5_call(mt5.symbol_info_tick, self.symbol)
@@ -97,7 +98,7 @@ class GridRuntimeMixin:
         return apply_default_filling_mode(request, self.filling_mode)
 
     def _append_action_if_queued(self, request):
-        if self._action_collector is None:
+        if getattr(self, "_action_collector", None) is None:
             return False
         if request is not None:
             self._action_collector.append(request)
@@ -115,38 +116,50 @@ class GridRuntimeMixin:
 
 
 # ---------------------------------------------------------------------------
-# GridStateStatsMixin (originally in state_stats.py)
+# GridStateStatsMixin
 # ---------------------------------------------------------------------------
 
 class GridStateStatsMixin:
     def get_state(self):
-        """Return strategy internal state for config-sync persistence."""
+        """返回策略内部状态用于持久化同步。"""
+        # [修复 L-02]：完整序列化游标时间、Ticket 及订单缓存状态，防止重启丢失
         return {
-            'pause_until': self.pause_until,
-            'enabled': self.enabled,
-            '_last_atr_value': self._last_atr_value,
-            '_last_atr_time': self._last_atr_time,
-            'anchor': self.anchor,
-            '_last_recenter_time': self._last_recenter_time,
-            "_last_hedge_time": self._last_hedge_time,
-            "_last_hedge_entry_price": self._last_hedge_entry_price,
-            '_stats': self._stats,
+            'pause_until': getattr(self, 'pause_until', 0.0),
+            'enabled': getattr(self, 'enabled', False),
+            '_last_atr_value': getattr(self, '_last_atr_value', None),
+            '_last_atr_time': getattr(self, '_last_atr_time', 0.0),
+            'anchor': getattr(self, 'anchor', None),
+            '_last_recenter_time': getattr(self, '_last_recenter_time', 0.0),
+            "_last_hedge_time": getattr(self, "_last_hedge_time", 0.0),
+            "_last_hedge_entry_price": getattr(self, "_last_hedge_entry_price", None),
+            '_stats': getattr(self, '_stats', {}),
+            # 补齐丢失的增量游标与状态字典
+            '_last_deal_time': getattr(self, '_last_deal_time', 0.0),
+            '_last_deal_ticket': getattr(self, '_last_deal_ticket', 0),
+            '_order_profit': getattr(self, '_order_profit', {}),
+            '_order_type': getattr(self, '_order_type', {}),
         }
 
     def set_state(self, state):
-        """Restore strategy internal state."""
+        """恢复策略内部状态。"""
         if state:
-            self.pause_until = state.get('pause_until', self.pause_until)
-            self.enabled = state.get('enabled', self.enabled)
-            self._last_atr_value = state.get('_last_atr_value', self._last_atr_value)
-            self._last_atr_time = state.get('_last_atr_time', self._last_atr_time)
-            self.anchor = state.get('anchor', self.anchor)
-            self._last_recenter_time = state.get('_last_recenter_time', self._last_recenter_time)
-            self._last_hedge_time = float(state.get("_last_hedge_time", self._last_hedge_time) or 0.0)
-            self._last_hedge_entry_price = state.get("_last_hedge_entry_price", self._last_hedge_entry_price)
-            # Restore stats data
+            self.pause_until = state.get('pause_until', getattr(self, 'pause_until', 0.0))
+            self.enabled = state.get('enabled', getattr(self, 'enabled', False))
+            self._last_atr_value = state.get('_last_atr_value', getattr(self, '_last_atr_value', None))
+            self._last_atr_time = state.get('_last_atr_time', getattr(self, '_last_atr_time', 0.0))
+            self.anchor = state.get('anchor', getattr(self, 'anchor', None))
+            self._last_recenter_time = state.get('_last_recenter_time', getattr(self, '_last_recenter_time', 0.0))
+            self._last_hedge_time = float(state.get("_last_hedge_time", getattr(self, "_last_hedge_time", 0.0)) or 0.0)
+            self._last_hedge_entry_price = state.get("_last_hedge_entry_price", getattr(self, "_last_hedge_entry_price", None))
+            
             if '_stats' in state:
                 self._stats = state['_stats']
+            
+            # [修复 L-02]：反序列化增量游标与缓存
+            self._last_deal_time = state.get('_last_deal_time', 0.0)
+            self._last_deal_ticket = state.get('_last_deal_ticket', 0)
+            self._order_profit = state.get('_order_profit', {})
+            self._order_type = state.get('_order_type', {})
 
     def _deal_net_profit(self, deal) -> float:
         profit = float(getattr(deal, "profit", 0.0) or 0.0)
@@ -155,16 +168,10 @@ class GridStateStatsMixin:
         return profit + swap + commission
 
     def _deal_time_value(self, deal) -> float:
-        t = getattr(deal, "time", 0)
-        if hasattr(t, "timestamp"):
-            try:
-                return float(t.timestamp())
-            except Exception:
-                pass
-        try:
-            return float(t)
-        except Exception:
-            return 0.0
+        """获取交易流水的时间戳。"""
+        # [优化]：MT5 严格保证 deal.time 返回 Unix 时间戳（整数）。
+        # 移除高昂的 hasattr 反射与双层 try-except，提升处理大规模历史流水的效率。
+        return float(getattr(deal, "time", 0))
 
     def _adjust_profitable_stats(self, order_type: str, amount_delta: float, count_delta: int = 0) -> None:
         if order_type == "long":
@@ -213,25 +220,33 @@ class GridStateStatsMixin:
                 self._adjust_profitable_stats(order_type, new_total, 1)
 
     def _update_stats(self):
-        """Update stats incrementally from new deals."""
+        """增量更新新成交流水的统计信息。"""
         now = time.time()
-        # Limit update frequency to avoid heavy MT5 calls.
-        if now - self._stats['last_stats_update_time'] < 300:  # 5 min
+        if now - self._stats.get('last_stats_update_time', 0) < 300:
             return
 
         try:
-            start_time = self._last_deal_time if self._last_deal_time else self._stats['last_reset_time']
-            deals = self._mt5_call(mt5.history_deals_get, symbol=self.symbol, group="*", start=start_time)
+            start_time = getattr(self, '_last_deal_time', 0.0)
+            if not start_time:
+                start_time = self._stats.get('last_reset_time', 0.0)
+                
+            # [修复 L-01]：严格遵守 MT5 的日期范围查询签名，通过 datetime 对象传入时间区间
+            date_from = datetime.fromtimestamp(start_time)
+            date_to = datetime.now()
+            deals = self._mt5_call(mt5.history_deals_get, date_from, date_to, group="*")
 
             if deals:
                 max_time = float(self._last_deal_time or 0.0)
                 max_ticket = int(self._last_deal_ticket or 0)
+                
                 for deal in deals:
-                    if deal.magic != self.magic:
+                    # 将 magic 和 symbol 过滤转移到 Python 层面进行
+                    if deal.magic != self.magic or deal.symbol != self.symbol:
                         continue
 
                     deal_time = self._deal_time_value(deal)
                     deal_ticket = int(getattr(deal, "ticket", 0) or 0)
+                    
                     if (deal_time < self._last_deal_time) or (
                         deal_time == self._last_deal_time and deal_ticket <= self._last_deal_ticket
                     ):
@@ -249,25 +264,20 @@ class GridStateStatsMixin:
             self._stats['last_stats_update_time'] = now
 
         except Exception as e:
-            Logger.log(self.symbol, "EXCEPTION", f"_update_stats error: {str(e)}")
+            Logger.log(getattr(self, "symbol", "UNKNOWN"), "EXCEPTION", f"_update_stats 底层发生异常: {str(e)}")
 
 
 # ---------------------------------------------------------------------------
-# GridSymbolMixin (originally in symbol_runtime.py)
+# GridSymbolMixin
 # ---------------------------------------------------------------------------
 
 class GridSymbolMixin:
     def set_symbol(self, new_symbol: str, *, reset_runtime_state: bool = True):
-        """Switch trading symbol and refresh symbol info cache.
-
-        :param reset_runtime_state: When True, clears anchor, ATR cache,
-            and hedge runtime state to avoid cross-symbol contamination.
-        """
-        if not new_symbol or new_symbol == self.symbol:
+        """切换交易品种并刷新品种信息缓存。"""
+        if not new_symbol or new_symbol == getattr(self, "symbol", None):
             return
 
         self.symbol = new_symbol
-        # Refresh static symbol info cache
         self._cache_symbol_info()
 
         if reset_runtime_state:
@@ -275,12 +285,10 @@ class GridSymbolMixin:
             self._last_recenter_time = 0.0
             self.pause_until = 0.0
 
-            # ATR cache
             self._last_atr_value = None
             self._last_atr_time = 0.0
             self._last_adapt_bar_time = 0.0
 
-            # Hedge runtime state
             self._last_hedge_time = 0.0
             self._last_hedge_entry_price = None
 
@@ -294,7 +302,7 @@ class GridSymbolMixin:
         return 0
 
     def _cache_symbol_info(self):
-        info = self._mt5_call(mt5.symbol_info, self.symbol)
+        info = self._mt5_call(mt5.symbol_info, getattr(self, "symbol", ""))
 
         if info:
             self.digits = info.digits
@@ -316,15 +324,20 @@ class GridSymbolMixin:
             self.vol_precision = 2
             self.filling_mode = None
             self.initialized = False
-            Logger.log(self.symbol, "WARN", "Failed to fetch symbol info, using defaults.")
+            Logger.log(getattr(self, "symbol", "UNKNOWN"), "WARN", "获取品种信息失败，已回退至默认设置。")
 
     def _normalize_price(self, price):
-        return float(round(price, self.digits))
+        return float(round(price, getattr(self, "digits", 2)))
 
     def _normalize_volume(self, vol):
-        if self.vol_step > 0:
+        if getattr(self, "vol_step", 0) > 0:
             steps = round(vol / self.vol_step)
             vol = steps * self.vol_step
-        precision = getattr(self, "vol_precision", 2)
-        return float(round(max(self.vol_min, min(self.vol_max, vol)), precision))
-
+            
+        # [优化]：移除多余的 getattr 查询。进入此处时 self.vol_precision 已确保被初始化。
+        precision = self.vol_precision if getattr(self, "initialized", False) else 2
+        
+        # 兜底确保 vol_min / vol_max 不抛出属性错误
+        v_min = getattr(self, "vol_min", 0.01)
+        v_max = getattr(self, "vol_max", 100)
+        return float(round(max(v_min, min(v_max, vol)), precision))

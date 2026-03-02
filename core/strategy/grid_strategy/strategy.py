@@ -228,6 +228,9 @@ class GridStrategy(
         self.window = int(window)
         self.min_price = float(min_p)
         self.max_price = float(max_p)
+        # [修复 L-06] 保留用户配置的原始硬边界，供 adaptive 动态范围更新时做 clamp 用。
+        self._user_min_price = float(min_p)
+        self._user_max_price = float(max_p)
         self.enabled = enabled
         self.pause_until = 0
         self.use_atr = use_atr

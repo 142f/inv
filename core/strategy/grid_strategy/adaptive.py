@@ -110,8 +110,14 @@ class GridAdaptiveMixin:
             self.lot = max(0.0, self.base_lot * lot_mult)
 
         buffer = atr_current * self.adaptive_range_buffer_atr
-        self.min_price = float(np.min(rates_comp["low"])) - buffer
-        self.max_price = float(np.max(rates_comp["high"])) + buffer
+        computed_min = float(np.min(rates_comp["low"])) - buffer
+        computed_max = float(np.max(rates_comp["high"])) + buffer
+        # [修复 L-06] 与用户设定的硬边界取交集，防止 adaptive 把网格扩张到危险价位。
+        # 若用户未设置有效边界（默认 0 / 999999），clamp 不产生实质约束。
+        user_min = getattr(self, '_user_min_price', 0.0)
+        user_max = getattr(self, '_user_max_price', float('inf'))
+        self.min_price = max(computed_min, user_min)
+        self.max_price = min(computed_max, user_max)
 
     # [优化：新增私有辅助] 提取矢量化 TR 计算，消除代码重复
     @staticmethod

@@ -4,6 +4,17 @@ import time
 from core.logger import Logger
 from core.strategy.components import RangeAction
 
+
+def _fmt_skip(label: str, stats: dict) -> str:
+    parts = [f"{k}={v}" for k, v in stats.items() if v]
+    if not parts:
+        return ""
+    return f"{label}({', '.join(parts)})"
+
+# 优化说明：将内嵌函数 _cap_cell 提升至模块级，彻底消除高频调用时的闭包重建开销
+def _cap_cell(label: str, value: str, width: int) -> str:
+    return Logger._pad_display(f"{label}{value}", width)
+
 class GridUpdateMixin:
     def on_tick(self, ctx, *, action_collector=None):
         return self.update(
@@ -32,12 +43,10 @@ class GridUpdateMixin:
         if not self.enabled:
             return
             
-        # 休市暂停检查 (Error Backoff)
         now = time.time()
         if now < self.pause_until:
             return
 
-        # 获取一次 tick，后续复用（Runner 可传入 tick，减少重复的 MT5 调用）
         if tick is None:
             tick = self._get_tick()
 
@@ -45,11 +54,9 @@ class GridUpdateMixin:
             self.pause_until = now + 5
             return
 
-        # 市场活跃度检查 (Proactive Check)
         if not self._is_market_open(tick):
             return
 
-        # 极端点差闸门 (Fuse)
         spread_check = self.risk_manager.check_spread(
             bid=tick.bid,
             ask=tick.ask,
@@ -69,7 +76,6 @@ class GridUpdateMixin:
 
         self._maybe_adapt_params()
 
-        # --- ATR adaptive step/tp ---
         atr_value = None
         if self.use_atr and not self.adaptive_enabled:
             if atr is not None:
@@ -91,12 +97,12 @@ class GridUpdateMixin:
             else:
                 atr_value = self._calculate_atr()
 
-        if self.use_atr and not self.adaptive_enabled and atr_value:
-            self._apply_atr_targets(float(atr_value))
+            # 优化说明：消除了重复的属性查找（self.use_atr, self.adaptive_enabled），内联合并逻辑
+            if atr_value:
+                self._apply_atr_targets(float(atr_value))
 
         mid_price = (tick.bid + tick.ask) / 2
         
-        # 边界检查
         range_action = self.risk_manager.check_range(
             mid_price=mid_price,
             min_price=self.min_price,
@@ -109,35 +115,28 @@ class GridUpdateMixin:
             self.clear_old_orders()
             return
         if range_action == RangeAction.FREEZE:
-            # freeze means do nothing (no trim/no add)
             return
 
-        # 1. 获取当前属于本实例的挂单和持仓
         if orders_list is not None:
             if orders_filtered:
                 my_orders = orders_list
             else:
-                # 过滤属于本策略的订单 (增加 symbol 过滤)
                 my_orders = [o for o in orders_list if o.magic == self.magic and o.symbol == self.symbol]
         else:
             orders = self._mt5_call(mt5.orders_get, symbol=self.symbol)
             my_orders = [o for o in orders if o.magic == self.magic] if orders else []
         
-        # 1.5 获取持仓
         if positions_list is not None:
             if positions_filtered:
                 my_positions = positions_list
             else:
-                # 过滤属于本策略的持仓 (增加 symbol 过滤)
                 my_positions = [p for p in positions_list if p.symbol == self.symbol and p.magic == self.magic]
         else:
             positions = self._mt5_call(mt5.positions_get, symbol=self.symbol)
-            # 增加 magic 过滤
             my_positions = [p for p in positions if p.symbol == self.symbol and p.magic == self.magic] if positions else []
 
         self._index_orders(my_orders)
             
-        # --- 状态播报 (每分钟一次) ---
         should_log_status = now - self._last_status_log_time > self._status_log_interval
         if should_log_status:
             float_profit = sum(p.profit for p in my_positions)
@@ -145,7 +144,6 @@ class GridUpdateMixin:
             buy_orders = sum(len(v) for v in self.bid_orders.values())
             sell_orders = sum(len(v) for v in self.ask_orders.values())
             
-            # 更新统计数据
             self._update_stats()
             
             price_width = max(12, self.digits + 8)
@@ -155,7 +153,6 @@ class GridUpdateMixin:
             if self.use_atr and self.base_step:
                 atr_coef = self.step / self.base_step
             
-            # 优化后的状态日志：清晰的字段标签 + 统一对齐
             status_msg = (
                 f"Magic={self.magic:04d} | "
                 f"Price: {tick.bid:>{price_width}.{self.digits}f} / {tick.ask:>{price_width}.{self.digits}f} | "
@@ -168,18 +165,26 @@ class GridUpdateMixin:
             Logger.log(self.symbol, "STATUS", status_msg)
             self._last_status_log_time = now
 
-        # --- Fixed Grid: Initialize anchor to min_price once ---
+        # [修复 L-07] adaptive 模式下 min_price 每 K 线都会被动态覆盖，
+        # 若用 min_price 作为初始锚点，adaptive 更新后锚点与价格范围会错位。
+        # 改用 mid_price 作锚点：它位于当前价格范围中央，网格层级分布更合理。
         if self.anchor is None:
-             self.anchor = self.min_price
+            self.anchor = mid_price if self.adaptive_enabled else self.min_price
 
-        # ========== HEDGE MANAGER ==========
-        if self.hedge_enabled and self.mode == "long" and self.max_net_vol is not None:
+        # [修复 L-05] neutral 模式下净多头同样可能超出 max_net_vol 上限，
+        # 对冲管理器（做空对冲多头）在 neutral/long 两种模式下均适用。
+        # short 模式的做多对冲属于镜像逻辑，当前实现不覆盖，在此明确排除。
+        if self.hedge_enabled and self.mode in ("long", "neutral") and self.max_net_vol is not None:
             self._run_hedge_manager(my_positions, tick)
-        # ========== END HEDGE MANAGER ==========
 
         positions_for_block = my_positions
         if self.mode == "long":
-            positions_for_block = [p for p in my_positions if p.type == mt5.POSITION_TYPE_BUY]
+            if self.hedge_enabled:
+                # [修复 L-12] 对冲模式下将全部持仓（含对冲空头）纳入阻塞层级，
+                # 防止网格在对冲空头所在价位再挂买单，造成持仓混叠。
+                positions_for_block = my_positions
+            else:
+                positions_for_block = [p for p in my_positions if p.type == mt5.POSITION_TYPE_BUY]
         elif self.mode == "short":
             positions_for_block = [p for p in my_positions if p.type == mt5.POSITION_TYPE_SELL]
 
@@ -188,9 +193,8 @@ class GridUpdateMixin:
         if self.step > 0 and self.anchor is not None:
             pos_k_set = {round((p_price - self.anchor) / self.step) for p_price in existing_positions_prices}
 
-        min_dist = max(self.stop_level, self.point * 10) # 最小挂单距离
+        min_dist = max(self.stop_level, self.point * 10)
 
-        # 2. 生成目标网格层级 (围绕 Anchor 固定生成)
         target_buys, target_sells = self.grid_calculator.build_targets(
             anchor=self.anchor,
             step=self.step,
@@ -210,7 +214,6 @@ class GridUpdateMixin:
             long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(
                 my_positions, my_orders
             )
-            # --- account stop-out buffer (爆仓金额) ---
             liq_buffer = None
             try:
                 account = mt5.account_info()
@@ -220,7 +223,6 @@ class GridUpdateMixin:
                     so_mode = getattr(account, "margin_so_mode", None)
                     so_level = getattr(account, "margin_so_so", None)
                     if so_level is not None:
-                        # Stop-out equity threshold
                         if so_mode == getattr(mt5, "ACCOUNT_STOP_OUT_PERCENT", None):
                             stopout_equity = margin * float(so_level) / 100.0
                         else:
@@ -251,8 +253,7 @@ class GridUpdateMixin:
                     current = -net_vol
                     remaining = cap + net_vol
 
-            def _cap_cell(label: str, value: str, width: int) -> str:
-                return Logger._pad_display(f"{label}{value}", width)
+            # 优化说明：已移除内嵌函数 _cap_cell
 
             remark = ""
             last_target = None
@@ -265,34 +266,22 @@ class GridUpdateMixin:
 
             if max_orders > 0:
                 targets = target_buys if side == "buy" else target_sells
-                # [FIX] 无论 targets 是否足够，若 max_orders 很大，我们都尝试估算“末档价格”
-                # 之前使用固定 Anchor 计算导致价格严重偏差（3797 vs 4900），现在改用现价推算
-                
                 is_window_limited = (len(targets) < max_orders)
                 
                 if is_window_limited and self.step > 0:
-                    # 窗口不足，需要推算末档价
                     if side == "buy":
-                        # 买单：向下推算。参考价为最近的一个买单（或现价）
                         ref_price = targets[0] if targets else tick.ask
                         last_target = self._normalize_price(ref_price - self.step * (max_orders - 1))
                     else:
-                        # 卖单：向上推算。参考价为最近的一个卖单（或现价）
-                        # target_sells 是降序 [High ... Low]，虽然我们是从 Low 开始挂，
-                        # 但推算“最远”的那个价格时，应该是 Low + (N-1)*Step
                         ref_price = targets[-1] if targets else tick.bid
                         last_target = self._normalize_price(ref_price + self.step * (max_orders - 1))
                     
                     remark = "窗口限制"
                 elif targets:
-                    # 窗口足够覆盖资金上限
                     if side == "buy":
-                        # 买单 [High ... Low]，取第 N 个
                         idx = min(len(targets), max_orders) - 1
                         last_target = targets[idx]
                     else:
-                        # 卖单 [High ... Low]，我们是从 Low (targets[-1]) 开始成交的
-                        # 所以如果有 N 个配额，对应的最远价格是 targets[-N]
                         idx = -min(len(targets), max_orders)
                         last_target = targets[idx]
                 else:
@@ -349,8 +338,6 @@ class GridUpdateMixin:
             cap_msg = f"magic={self.magic} | CAP | " + " | ".join(cells)
             Logger.log(self.symbol, "STATUS", cap_msg)
         
-        # 3. 挂单维护逻辑
-        
         # A. TRIM (清理多余/超界挂单)
         if self.auto_trim:
             buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
@@ -360,40 +347,26 @@ class GridUpdateMixin:
             for o in my_orders:
                 if o.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT):
                     op = self._normalize_price(o.price_open)
-                    should_remove = False
-
-                    # 检查是否在保留窗口内
-                    if o.type == mt5.ORDER_TYPE_BUY_LIMIT and o in buy_to_keep:
-                        should_remove = False
-                    elif o.type == mt5.ORDER_TYPE_SELL_LIMIT and o in sell_to_keep:
-                        should_remove = False
-                    # 检查是否在目标价格集合内
-                    elif op not in target_set:
-                        should_remove = True
-                    # 检查是否超出价格范围
-                    elif op < self.min_price or op > self.max_price:
-                        should_remove = True
-                    # 检查是否与模式冲突
-                    elif o.type == mt5.ORDER_TYPE_BUY_LIMIT and self.mode == "short":
-                        should_remove = True
-                    elif o.type == mt5.ORDER_TYPE_SELL_LIMIT and self.mode == "long":
-                        should_remove = True
-
-                    if should_remove:
+                    is_buy = (o.type == mt5.ORDER_TYPE_BUY_LIMIT)
+                    
+                    # 优化说明：利用短路求值与卫语句取代原本啰嗦的 pass 分支，直接剔除了 should_remove 变量
+                    if (is_buy and o in buy_to_keep) or (not is_buy and o in sell_to_keep):
+                        continue
+                        
+                    if (op not in target_set) or (op < self.min_price) or (op > self.max_price) or \
+                       (is_buy and self.mode == "short") or (not is_buy and self.mode == "long"):
+                       
                         res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                         if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                             removed_tickets.add(o.ticket)
                             Logger.log(self.symbol, "TRIM", f"安全撤单(越界/模式冲突/目标外): {op}")
+
             if removed_tickets:
                 my_orders = [o for o in my_orders if o.ticket not in removed_tickets]
                 self._index_orders(my_orders)
 
         # B. 补单 (带库存风控)
-        
-        # 统计库存
         long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(my_positions, my_orders)
-        
-        # 统计持仓数量（用于 max_long_pos / max_short_pos 检查）
         long_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_BUY)
         short_pos_count = sum(1 for p in my_positions if p.type == mt5.POSITION_TYPE_SELL)
 
@@ -464,19 +437,8 @@ class GridUpdateMixin:
                 }
 
         if should_log_status:
-            def _fmt_skip(label, stats):
-                parts = []
-                for k, v in stats.items():
-                    if v: parts.append(f"{k}={v}")
-                if not parts:
-                    return ""
-                return f"{label}({', '.join(parts)})"
-
-            skip_sections = [
-                _fmt_skip("B", skips_stats["buy"]),
-                _fmt_skip("S", skips_stats["sell"]),
-            ]
-            skip_sections = [s for s in skip_sections if s]
+            # 优化说明：单行推导式完成解析，无需中途构建包含空字符的中间态列表
+            skip_sections = [s for s in (_fmt_skip("B", skips_stats["buy"]), _fmt_skip("S", skips_stats["sell"])) if s]
             if skip_sections:
                 Logger.log(
                     self.symbol,
