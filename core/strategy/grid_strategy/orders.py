@@ -223,7 +223,10 @@ class GridOrdersMixin:
         return buy_to_keep, sell_to_keep
 
     def clear_old_orders(self):
-        """启动时清理旧网格挂单，保留价格最近的window数量个订单"""
+        """清理旧网格挂单。
+        - enabled=False 时：撤销全部同 magic 挂单（4个窗口单全部撤销）
+        - enabled=True  时：保留价格最近的 window 数量个订单，删除多余部分
+        """
         orders = self._mt5_call(mt5.orders_get, symbol=self.symbol)
         my_orders = [o for o in orders if o.magic == self.magic] if orders else []
 
@@ -231,11 +234,14 @@ class GridOrdersMixin:
             Logger.log(self.symbol, "CLEANUP", f"Magic={self.magic:04d} | 无历史挂单，跳过清理")
             return
 
-        tick = self._get_tick()
-        if tick is None:
-            return
-
-        buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
+        # enabled=False：全部撤销，无需 tick 信息
+        if not self.enabled:
+            buy_to_keep, sell_to_keep = [], []
+        else:
+            tick = self._get_tick()
+            if tick is None:
+                return
+            buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
 
         # [修复 L-08] 改用 ticket 集合做 O(1) 查找，避免依赖对象身份比较（可能误判）
         buy_keep_tickets = {o.ticket for o in buy_to_keep}
@@ -243,7 +249,7 @@ class GridOrdersMixin:
         buy_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT and o.ticket not in buy_keep_tickets]
         sell_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT and o.ticket not in sell_keep_tickets]
 
-        # 删除超出窗口的订单
+        # 删除超出窗口的订单（disabled 时即为全部）
         for o in buy_to_remove + sell_to_remove:
             res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
             if res is None:
@@ -256,7 +262,8 @@ class GridOrdersMixin:
         Logger.log(
             self.symbol,
             "CLEANUP",
-            f"Magic={self.magic:04d} | 历史挂单清理完成 | 删除买单{len(buy_to_remove)}个 卖单{len(sell_to_remove)}个"
+            f"Magic={self.magic:04d} | {'[DISABLED] ' if not self.enabled else ''}"
+            f"历史挂单清理完成 | 删除买单{len(buy_to_remove)}个 卖单{len(sell_to_remove)}个"
             f"，保留买单{len(buy_to_keep)}个 卖单{len(sell_to_keep)}个",
         )
 

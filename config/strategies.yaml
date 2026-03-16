@@ -59,9 +59,9 @@
 
 - symbol: "BTCUSDc"             # 比特
   magic: 1003                   # 策略唯一ID
-  lot: 0.02                    # 交易手数
-  step: 199                    # 网格间距
-  tp_dist: 333           # 止盈距离
+  lot: 0.01                    # 交易手数
+  step: 366                    # 网格间距
+  tp_dist: 366           # 止盈距离
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 70000                  # 最小交易价格
   max_p: 1400000.0              # 最大交易价格
@@ -90,12 +90,12 @@
 - symbol: "BTCUSDc"             # 比特
   magic: 10031                   # 策略唯一ID
   lot: 0.01                 # 交易手数
-  step: 255                    # 网格间距
-  tp_dist: 288           # 止盈距离
+  step: 366                    # 网格间距
+  tp_dist: 366           # 止盈距离
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 60000                  # 最小交易价格
   max_p: 800000.0              # 最大交易价格
-  enabled: true                 # 是否启用
+  enabled: false                 # 是否启用
   mode: short                  # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
@@ -119,15 +119,66 @@
 - symbol: "XAUUSDc"             # 交易品种
   magic: 1001                   # 策略唯一ID
   lot: 0.01             # 交易手数
-  step: 9                      # 网格间距
+  step: 10                      # 网格间距
   tp_dist: 11         # 止盈距离
   sl_dist: 200          # 止损距离
   window: 4                     # 盘口挂单数量 (单边)
   min_p: 4000.0                 # 最小交易价格
   max_p: 5999            # 最大交易价格
-  enabled: true                 # 是否启用
+  enabled: false                # 是否启用
   auto_trim: true               # ????????
   mode: long                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
+  use_atr: false                # 是否使用 ATR 动态步长
+  atr_period: 20                # ATR 周期
+  atr_factor: 0.9               # ATR 系数 (step/tp_dist 共用)
+  atr_mode: ema                 # ATR 计算方式: wilder | ema | sma
+  adaptive_enabled: true        # 动态参数开关(仅新K线触发)
+  adaptive_timeframe: "M15"     # 动态参数周期
+  adaptive_lookback: 200        # 回看K线数量
+  adaptive_quantile_low: 0.30   # 低波动分位
+  adaptive_quantile_high: 0.70  # 高波动分位
+  adaptive_step_mult_low: 0.90  # 低波动步长系数
+  adaptive_step_mult_high: 1.10 # 高波动步长系数
+  adaptive_lot_min_mult: 0.5  # 最小仓位倍数
+  adaptive_lot_max_mult: 2.00   # 最大仓位倍数
+  adaptive_range_buffer_atr: 1.0 # 区间缓冲(ATR倍数)
+  recenter_steps: 3             # 价格偏离多少格后平移 Anchor
+  recenter_cooldown: 30         # 平移冷却时间(秒)
+  max_net_vol: 0.2              # 最大净持仓手数 (Neutral 模式风控)
+  max_new_orders_per_update: 10 # 每轮最多补单数量
+  # ===== 严格对冲参数（新增）===== 
+  hedge_enabled: true           # 是否启用对冲
+  hedge_fraction: 0.3333        # 最大对冲占 cap 的比例
+  hedge_tranches: 3             # 分段对冲次数
+  hedge_entry_steps: 1          # 每段对冲触发步数
+  hedge_exit_steps: 1           # 对冲退出触发步数
+  hedge_cooldown: 20            # 对冲冷却时间(秒)
+  max_gross_vol: 2.1            # 总仓位上限(多+空)
+  # ===== 波动率/成交量门槛（新增）===== 
+  hedge_vol_lookback: 300       # 波动率分位数回看(M1根数)
+  hedge_vol_window: 20          # 当前波动窗口(M1根数)
+  hedge_vol_quantile: 0.90      # 波动分位数
+  hedge_vol_base: 200           # 成交量基线窗口
+  hedge_vol_mult: 2.0           # 成交量倍数阈值
+  # ===== 对冲盈利 BE 止损（新增）===== 
+  be_trigger_steps: 1           # 盈利达到 1*step 启用 BE
+  be_buffer_points: 20          # 止损缓冲点数
+
+
+
+  
+- symbol: "XAUUSDc"             # 交易品种
+  magic: 10011                   # 策略唯一ID
+  lot: 0.01             # 交易手数
+  step: 10                      # 网格间距
+  tp_dist: 11         # 止盈距离
+  sl_dist: 200          # 止损距离
+  window: 4                     # 盘口挂单数量 (单边)
+  min_p: 4000.0                 # 最小交易价格
+  max_p: 5999            # 最大交易价格
+  enabled: true               # 是否启用
+  auto_trim: true               # ????????
+  mode: short                    # 多空双开(neutral), 仅做多(long), 仅做空(short)
   use_atr: false                # 是否使用 ATR 动态步长
   atr_period: 20                # ATR 周期
   atr_factor: 0.9               # ATR 系数 (step/tp_dist 共用)
