@@ -131,6 +131,7 @@ class StrategyUpdater:
         current_state = strategy.get_state()
         current_state.pop("enabled", None)
         cleared_orders = False
+        was_use_atr = bool(getattr(strategy, "use_atr", False))
 
         # 【修改点】保留订单相关字段的快照（由于逻辑分散），但移除了 ATR 与 Adaptive 的全量快照分配
         before = self._snapshot_order_related_state(strategy)
@@ -152,12 +153,16 @@ class StrategyUpdater:
         self._apply_updates(strategy, cfg, self._GENERAL_KEYS, coerce_value=self._coerce_general_value)
         self._apply_updates(strategy, cfg, self._HEDGE_KEYS)
         adaptive_changed = self._apply_updates(strategy, cfg, self._ADAPTIVE_KEYS)
+        atr_disabled_now = was_use_atr and (not bool(getattr(strategy, "use_atr", False)))
 
         if atr_changed:
             strategy._last_atr_value = None
             strategy._last_atr_time = 0.0
         if adaptive_changed:
             strategy._last_adapt_bar_time = 0.0
+        if atr_disabled_now and not cleared_orders:
+            strategy.clear_old_orders(force_all=True)
+            cleared_orders = True
 
         enabled_changed = ("enabled" in cfg) and (bool(cfg["enabled"]) != before["enabled"])
         order_related_changed = self._has_changed(strategy, before, self._ORDER_RELATED_KEYS)

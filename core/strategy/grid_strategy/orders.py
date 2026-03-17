@@ -222,7 +222,7 @@ class GridOrdersMixin:
         sell_to_keep = sell_orders[:self.window] if self.window > 0 else []
         return buy_to_keep, sell_to_keep
 
-    def clear_old_orders(self):
+    def clear_old_orders(self, force_all: bool = False):
         """清理旧网格挂单。
         - enabled=False 时：撤销全部同 magic 挂单（4个窗口单全部撤销）
         - enabled=True  时：保留价格最近的 window 数量个订单，删除多余部分
@@ -235,7 +235,7 @@ class GridOrdersMixin:
             return
 
         # enabled=False：全部撤销，无需 tick 信息
-        if not self.enabled:
+        if force_all or (not self.enabled):
             buy_to_keep, sell_to_keep = [], []
         else:
             tick = self._get_tick()
@@ -262,7 +262,9 @@ class GridOrdersMixin:
         Logger.log(
             self.symbol,
             "CLEANUP",
-            f"Magic={self.magic:04d} | {'[DISABLED] ' if not self.enabled else ''}"
+            f"Magic={self.magic:04d} | "
+            f"{'[FORCE_ALL] ' if force_all else ''}"
+            f"{'[DISABLED] ' if not self.enabled else ''}"
             f"历史挂单清理完成 | 删除买单{len(buy_to_remove)}个 卖单{len(sell_to_remove)}个"
             f"，保留买单{len(buy_to_keep)}个 卖单{len(sell_to_keep)}个",
         )
