@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import math
 from typing import Callable, List, Optional, Set, Tuple
 
 
@@ -38,7 +39,7 @@ class GridCalculator:
         safe_min_dist = max(0.0, float(min_dist)) if min_dist is not None else 0.0
 
         if mode in ("neutral", "long") and buy_window > 0:
-            start_k = int((ask - anchor) / step) + 3
+            start_k = math.floor((ask - anchor) / step) + 3
             target_buys = self._collect_side_targets(
                 side="buy", start_k=start_k, k_delta=-1, window=buy_window,
                 anchor=anchor, step=step, min_price=min_price, max_price=max_price,
@@ -46,7 +47,7 @@ class GridCalculator:
             )
 
         if mode in ("neutral", "short") and sell_window > 0:
-            start_k = int((bid - anchor) / step) - 3
+            start_k = math.ceil((bid - anchor) / step) - 3
             target_sells = self._collect_side_targets(
                 side="sell", start_k=start_k, k_delta=1, window=sell_window,
                 anchor=anchor, step=step, min_price=min_price, max_price=max_price,
@@ -157,6 +158,7 @@ class RiskManager:
         pending_sell_vol: float,
         net_vol: Optional[float] = None,
         lot: float,
+        net_lot: Optional[float] = None,
         side: str,
         mode: str,
         max_net_vol: Optional[float] = None,
@@ -179,7 +181,8 @@ class RiskManager:
         total_short = short_vol + pending_sell_vol
         
         effective_net_vol = net_vol if net_vol is not None else (total_long - total_short)
-        new_net = effective_net_vol + lot if is_buy else effective_net_vol - lot
+        net_delta = lot if net_lot is None else max(0.0, float(net_lot))
+        new_net = effective_net_vol + net_delta if is_buy else effective_net_vol - net_delta
 
         # 单边持仓量限制检查
         if is_buy:

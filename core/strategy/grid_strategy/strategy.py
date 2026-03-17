@@ -366,8 +366,16 @@ class GridStrategy(
         self._last_atr_value = None
         self._last_atr_time = 0
         self._last_adapt_bar_time = 0
+        self._adaptive_step_mult_state = 1.0
+        self._adaptive_lot_mult_state = 1.0
         self._last_status_log_time = 0
         self._status_log_interval = 60
+        self._spread_fuse_active = False
+        self._spread_rel_atr_enter = 0.35
+        self._spread_rel_mid_enter = 0.0030
+        self._spread_rel_atr_exit = 0.25
+        self._spread_rel_mid_exit = 0.0020
+        self._spread_fuse_hold_seconds = max(2.0, min(10.0, self.extreme_cooldown * 0.25))
         self._stats = build_stats_state(self.magic)
         self._order_profit = {}
         self._order_type = {}

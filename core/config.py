@@ -26,6 +26,7 @@ class ConfigLoader:
         default_path = project_root / "config" / "strategies.yaml"
         self.config_path = Path(config_path) if config_path else default_path
         self.last_mtime = 0.0
+        self.last_load_failed = False
 
     def load_if_changed(self) -> Tuple[bool, List[dict]]:
         """Return (changed, configs). If unchanged, configs is empty."""
@@ -39,28 +40,38 @@ class ConfigLoader:
             return False, []
 
         configs = self._load_configs()
+        if configs is None:
+            # Keep last_mtime unchanged so next sync will retry loading the same file.
+            self.last_load_failed = True
+            return False, []
+
+        self.last_load_failed = False
         self.last_mtime = current_mtime
         return True, configs
 
     def force_load(self) -> List[dict]:
         configs = self._load_configs()
+        if configs is None:
+            self.last_load_failed = True
+            return []
+        self.last_load_failed = False
         try:
             self.last_mtime = self.config_path.stat().st_mtime
         except FileNotFoundError:
             pass
         return configs
 
-    def _load_configs(self) -> List[dict]:
+    def _load_configs(self) -> List[dict] | None:
         try:
             with open(self.config_path, "r", encoding="utf-8") as fh:
                 data = yaml.safe_load(fh) or []
         except Exception as exc:
             Logger.log("SYSTEM", "ERROR", f"Failed to read config {self.config_path}: {exc}")
-            return []
+            return None
 
         if not isinstance(data, list):
             Logger.log("SYSTEM", "ERROR", f"Config root must be a list: {self.config_path}")
-            return []
+            return None
 
         return self._validate_all(data)
 

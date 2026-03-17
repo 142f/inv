@@ -43,6 +43,26 @@ class GridAdaptiveMixin:
             )
         return atr_series
 
+    @staticmethod
+    def _robust_zscore(series: np.ndarray, value: float) -> float:
+        if series is None or len(series) == 0:
+            return 0.0
+        median = float(np.median(series))
+        mad = float(np.median(np.abs(series - median)))
+        if mad <= 1e-12:
+            std = float(np.std(series))
+            if std <= 1e-12:
+                return 0.0
+            return (float(value) - median) / std
+        return (float(value) - median) / (1.4826 * mad)
+
+    @staticmethod
+    def _smooth_factor(current: float | None, target: float, alpha: float = 0.35) -> float:
+        a = min(0.9, max(0.05, float(alpha)))
+        if current is None:
+            return float(target)
+        return float(current) * (1.0 - a) + float(target) * a
+
     def _apply_atr_targets(self, atr_value: float, *, step_mult: float = 1.0) -> None:
         if atr_value is None or atr_value <= 0 or self.atr_factor <= 0:
             return
@@ -97,30 +117,42 @@ class GridAdaptiveMixin:
             return
 
         atr_current = float(atr_series[-1])
+        atr_median = float(np.median(atr_series))
+        z = self._robust_zscore(atr_series, atr_current)
+        tanh_z = float(np.tanh(z))
 
-        # Keep runtime robust when quantiles are hot-updated in a bad order.
-        q_low_raw = float(self.adaptive_quantile_low)
-        q_high_raw = float(self.adaptive_quantile_high)
-        if q_low_raw > q_high_raw:
-            q_low_raw, q_high_raw = q_high_raw, q_low_raw
-        q_low, q_high, atr_median = np.quantile(atr_series, [q_low_raw, q_high_raw, 0.5])
+        # Continuous mapping for step multiplier.
+        step_low = max(1e-6, min(float(self.adaptive_step_mult_low), float(self.adaptive_step_mult_high)))
+        step_high = max(step_low, max(float(self.adaptive_step_mult_low), float(self.adaptive_step_mult_high)))
+        step_center = (step_low + step_high) * 0.5
+        step_amp = (step_high - step_low) * 0.5
+        target_step_mult = step_center + step_amp * tanh_z
+        target_step_mult = max(step_low, min(step_high, target_step_mult))
+        self._adaptive_step_mult_state = self._smooth_factor(
+            getattr(self, "_adaptive_step_mult_state", None),
+            target_step_mult,
+            alpha=0.35,
+        )
+        self._apply_atr_targets(atr_current, step_mult=self._adaptive_step_mult_state)
 
-        low_mult = max(1e-6, float(self.adaptive_step_mult_low))
-        high_mult = max(1e-6, float(self.adaptive_step_mult_high))
-        step_mult = 1.0
-        if atr_current <= q_low:
-            step_mult = low_mult
-        elif atr_current >= q_high:
-            step_mult = high_mult
-
-        self._apply_atr_targets(atr_current, step_mult=step_mult)
-
+        # High volatility (z>0) -> reduce lot; low volatility (z<0) -> increase lot.
         if atr_current > 0 and self.base_lot > 0:
-            lot_mult = max(
-                self.adaptive_lot_min_mult,
-                min(self.adaptive_lot_max_mult, atr_median / atr_current),
+            lot_low = max(1e-6, min(float(self.adaptive_lot_min_mult), float(self.adaptive_lot_max_mult)))
+            lot_high = max(lot_low, max(float(self.adaptive_lot_min_mult), float(self.adaptive_lot_max_mult)))
+            lot_center = (lot_low + lot_high) * 0.5
+            lot_amp = (lot_high - lot_low) * 0.5
+            target_lot_mult = lot_center - lot_amp * tanh_z
+            target_lot_mult = max(lot_low, min(lot_high, target_lot_mult))
+            self._adaptive_lot_mult_state = self._smooth_factor(
+                getattr(self, "_adaptive_lot_mult_state", None),
+                target_lot_mult,
+                alpha=0.35,
             )
-            self.lot = max(0.0, self.base_lot * lot_mult)
+            self.lot = max(0.0, self.base_lot * self._adaptive_lot_mult_state)
+
+        # Cache ATR for other runtime modules (e.g. spread relative fuse / fill probability).
+        self._last_atr_value = atr_current
+        self._last_atr_time = time.time()
 
         buffer = atr_current * self.adaptive_range_buffer_atr
         computed_min = float(np.min(rates_comp["low"])) - buffer

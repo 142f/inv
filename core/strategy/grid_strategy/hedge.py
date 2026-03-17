@@ -132,7 +132,8 @@ class GridHedgeMixin:
         if tick.ask >= pos.price_open:
             return None
 
-        sl = self._normalize_price(pos.price_open + self.be_buffer_points * self.point)
+        # Short BE should protect below entry, not above entry.
+        sl = self._normalize_price(pos.price_open - self.be_buffer_points * self.point)
         if pos.sl and float(pos.sl) <= sl:
             return None
 
@@ -147,7 +148,7 @@ class GridHedgeMixin:
         }
         return self._dispatch_request(req)
 
-    def _run_hedge_manager(self, my_positions, tick):
+    def _run_hedge_manager(self, my_positions, tick, *, predicted_net_vol: float | None = None):
         long_pos, short_pos = [], []
         long_vol = short_vol = 0.0
 
@@ -160,12 +161,12 @@ class GridHedgeMixin:
                 short_vol += p.volume
 
         net_vol = long_vol - short_vol
+        net_for_trigger = float(predicted_net_vol) if predicted_net_vol is not None else net_vol
         cap = float(self.max_net_vol)
         hedge_target = cap * self.hedge_fraction
 
         gross = long_vol + short_vol
-        if self.max_gross_vol is not None and gross >= self.max_gross_vol:
-            return
+        at_gross_cap = self.max_gross_vol is not None and gross >= self.max_gross_vol
 
         now = time.time()
         mid = (tick.bid + tick.ask) * 0.5
@@ -189,7 +190,7 @@ class GridHedgeMixin:
         if tranche <= 0:
             return
 
-        if net_vol >= cap and short_vol < hedge_target:
+        if (not at_gross_cap) and net_for_trigger >= cap and short_vol < hedge_target:
             if gate_ok and (now - self._last_hedge_time >= self.hedge_cooldown):
                 if (self._last_hedge_entry_price is None or
                     mid <= self._last_hedge_entry_price - self.hedge_entry_steps * step):
@@ -201,6 +202,16 @@ class GridHedgeMixin:
                     )
                     if vol_to_add > 0 and (self.max_gross_vol is None or (gross + vol_to_add <= self.max_gross_vol)):
                         res = self._open_hedge_sell(vol_to_add, tick=tick)
+                        if res and getattr(res, "queued", False):
+                            # Queue mode: mark cooldown immediately to avoid duplicate hedges
+                            # before asynchronous execution updates account state.
+                            self._last_hedge_time = now
+                            self._last_hedge_entry_price = mid
+                            Logger.log(
+                                self.symbol,
+                                "HEDGE_ADD",
+                                f"Magic={self.magic:04d} | Add={vol_to_add:6.2f} queued | NetPred={net_for_trigger:6.2f}/{cap:6.2f}",
+                            )
                         if (
                             res
                             and (not getattr(res, "queued", False))
@@ -212,7 +223,7 @@ class GridHedgeMixin:
                                 self.symbol,
                                 "HEDGE_ADD",
                                 f"Magic={self.magic:04d} | Add={vol_to_add:6.2f} Short={short_vol:6.2f}/{hedge_target:6.2f} "
-                                f"Net={net_vol:6.2f}/{cap:6.2f} | Volatility={(0.0 if vol_cur is None else vol_cur):6.3f}>={(0.0 if vol_thr is None else vol_thr):6.3f} "
+                                f"Net={net_vol:6.2f} NetPred={net_for_trigger:6.2f}/{cap:6.2f} | Volatility={(0.0 if vol_cur is None else vol_cur):6.3f}>={(0.0 if vol_thr is None else vol_thr):6.3f} "
                                 f"Volume={(0.0 if v_cur is None else v_cur):6.1f}>={self.hedge_vol_mult}x{(0.0 if v_base is None else v_base):6.1f}",
                             )
 
@@ -223,7 +234,7 @@ class GridHedgeMixin:
         )
 
         if short_vol > 0 and (now - self._last_hedge_time >= self.hedge_cooldown):
-            if rebound or net_vol <= safe_net:
+            if rebound or net_for_trigger <= safe_net:
                 target_pos = self._select_hedge_exit_position(short_pos, tick.ask)
                 if target_pos is None:
                     return
@@ -235,6 +246,14 @@ class GridHedgeMixin:
                     return
 
                 res = self._close_sell_position(target_pos.ticket, vol_to_close, tick=tick)
+                if res and getattr(res, "queued", False):
+                    # Queue mode: throttle repeated exit attempts until queued request is flushed.
+                    self._last_hedge_time = now
+                    Logger.log(
+                        self.symbol,
+                        "HEDGE_EXIT",
+                        f"Magic={self.magic:04d} | Close={vol_to_close:6.2f} queued | NetPred={net_for_trigger:6.2f}",
+                    )
                 if (
                     res
                     and (not getattr(res, "queued", False))
@@ -244,6 +263,6 @@ class GridHedgeMixin:
                     Logger.log(
                         self.symbol,
                         "HEDGE_EXIT",
-                        f"Magic={self.magic:04d} | Close={vol_to_close:6.2f} Net={net_vol:6.2f} "
+                        f"Magic={self.magic:04d} | Close={vol_to_close:6.2f} Net={net_vol:6.2f} NetPred={net_for_trigger:6.2f} "
                         f"SafeLevel={safe_net:6.2f} | Rebound={rebound}",
                     )

@@ -12,6 +12,20 @@ from core.strategy.manager import StrategyManager
 from core.runtime import Runner
 
 
+def _env_numeric(env_name: str, caster, default):
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    raw = str(raw).strip()
+    if raw == "":
+        return default
+    try:
+        return caster(raw)
+    except (TypeError, ValueError):
+        Logger.log("系统", "警告", f"环境变量 {env_name}={raw!r} 非法，已回退默认值 {default}")
+        return default
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="网格交易执行器 (有界循环，无死循环)")
     
@@ -19,19 +33,19 @@ def parse_args(argv=None):
     parser.add_argument(
         "--cycles",
         type=int,
-        default=int(os.environ.get("INV_CYCLES") or 999999999),
+        default=_env_numeric("INV_CYCLES", int, 999999999),
         help="最大循环执行次数 (默认: 999999999)",
     )
     parser.add_argument(
         "--max-seconds",
         type=float,
-        default=float(os.environ.get("INV_MAX_SECONDS") or 0.0),
+        default=_env_numeric("INV_MAX_SECONDS", float, 0.0),
         help="最大运行时间限制(秒)，超时自动退出，0 表示不限制",
     )
     parser.add_argument(
         "--interval",
         type=float,
-        default=float(os.environ.get("INV_INTERVAL") or 1.0),
+        default=_env_numeric("INV_INTERVAL", float, 1.0),
         help="每次循环间的休眠间隔(秒) (默认: 1.0)",
     )
     return parser.parse_args(argv)

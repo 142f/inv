@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import time
 from typing import Any, Callable, Dict, FrozenSet
 
 from core.logger import Logger
@@ -309,6 +310,7 @@ class StrategyUpdater:
 _ALLOWED_STRATEGY_KWARGS: FrozenSet[str] = frozenset(
     name for name in inspect.signature(GridStrategy.__init__).parameters if name != "self"
 )
+_PENDING_ADD_RETRY_SECONDS = 10.0
 
 def build_strategy(cfg: Dict[str, Any], *, lock: Any = None, datafeed: Any = None) -> GridStrategy:
     normalized = normalize_config(cfg)
@@ -325,16 +327,18 @@ class StrategyManager:
         self.broker = broker
         self.config_loader = config_loader
         self.active: Dict[int, GridStrategy] = {}
+        self._pending_additions: Dict[int, dict] = {}
+        self._pending_retry_at: Dict[int, float] = {}
         self._updater = StrategyUpdater(broker)
         self.datafeed = datafeed or DataFeed(broker)
 
     def sync(self):
         configs = self._load_changed_configs()
-        if configs is None:
-            return
+        if configs is not None:
+            new_magics = self._sync_configs(configs)
+            self._remove_inactive_strategies(new_magics)
 
-        new_magics = self._sync_configs(configs)
-        self._remove_inactive_strategies(new_magics)
+        self._retry_pending_additions()
 
     def _load_changed_configs(self) -> list[dict] | None:
         """【修改点】重构配置判空逻辑，合并冗余的 None 判断结构。"""
@@ -373,6 +377,7 @@ class StrategyManager:
                 continue
             new_magics.add(magic)
             self._upsert_strategy(magic, cfg)
+        self._prune_pending_additions(new_magics)
         return new_magics
 
     def _upsert_strategy(self, magic: int, cfg: dict):
@@ -380,6 +385,7 @@ class StrategyManager:
         if strategy is None:
             self._add_strategy(magic, cfg)
             return
+        self._drop_pending_addition(magic)
         self._updater.apply(strategy, cfg)
 
     def _remove_inactive_strategies(self, new_magics: set[int]):
@@ -388,24 +394,57 @@ class StrategyManager:
             if magic not in new_magics:
                 self._remove_strategy(magic)
 
-    def _add_strategy(self, magic: int, cfg: dict):
-        Logger.log(
-            "系统", "新增",
-            f"加载新策略 {cfg.get('symbol')} (Magic: {cfg.get('magic')}, 状态: {cfg.get('enabled', True)})"
-        )
+    def _add_strategy(self, magic: int, cfg: dict, *, from_retry: bool = False) -> bool:
+        if not from_retry:
+            Logger.log(
+                "系统", "新增",
+                f"加载新策略 {cfg.get('symbol')} (Magic: {cfg.get('magic')}, 状态: {cfg.get('enabled', True)})"
+            )
         symbol = cfg.get("symbol")
         if not self.broker.ensure_symbol(symbol):
-            Logger.log("系统", "错误", f"交易品种由于网络或权限暂不可用: {symbol}")
-            return
+            retry_msg = "将自动重试加载"
+            Logger.log("系统", "WARN", f"交易品种暂不可用: {symbol} (magic={magic})，{retry_msg}")
+            self._pending_additions[magic] = dict(cfg)
+            self._pending_retry_at[magic] = time.monotonic() + _PENDING_ADD_RETRY_SECONDS
+            return False
         normalized_cfg = dict(cfg)
         normalized_cfg["magic"] = magic
         strategy = build_strategy(normalized_cfg, lock=self.broker.lock, datafeed=self.datafeed)
         self.active[magic] = strategy
+        self._drop_pending_addition(magic)
         strategy.clear_old_orders(force_all=True)
+        return True
 
     def _remove_strategy(self, magic: int):
         strategy = self.active.pop(magic, None)
         if not strategy:
+            self._drop_pending_addition(magic)
             return
+        self._drop_pending_addition(magic)
         Logger.log("系统", "移除", f"卸载并清理策略 {strategy.symbol} (Magic: {magic})")
         strategy.clear_old_orders(force_all=True)
+
+    def _drop_pending_addition(self, magic: int) -> None:
+        self._pending_additions.pop(magic, None)
+        self._pending_retry_at.pop(magic, None)
+
+    def _prune_pending_additions(self, valid_magics: set[int]) -> None:
+        for magic in tuple(self._pending_additions):
+            if magic not in valid_magics:
+                self._drop_pending_addition(magic)
+
+    def _retry_pending_additions(self) -> None:
+        if not self._pending_additions:
+            return
+
+        now = time.monotonic()
+        for magic, cfg in tuple(self._pending_additions.items()):
+            if magic in self.active:
+                self._drop_pending_addition(magic)
+                continue
+
+            retry_at = float(self._pending_retry_at.get(magic, 0.0) or 0.0)
+            if now < retry_at:
+                continue
+
+            self._add_strategy(magic, cfg, from_retry=True)

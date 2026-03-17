@@ -16,6 +16,148 @@ def _cap_cell(label: str, value: str, width: int) -> str:
     return Logger._pad_display(f"{label}{value}", width)
 
 class GridUpdateMixin:
+    def _resolve_atr_reference(self, atr_value: float | None) -> float:
+        if atr_value is not None and float(atr_value) > 0:
+            return float(atr_value)
+        cached = float(getattr(self, "_last_atr_value", 0.0) or 0.0)
+        if cached > 0:
+            return cached
+        step = float(getattr(self, "step", 0.0) or 0.0)
+        if step > 0:
+            return step
+        return max(float(getattr(self, "point", 0.0) or 0.0) * 10.0, 1e-6)
+
+    def _handle_spread_fuse(self, *, tick, now: float, atr_reference: float) -> bool:
+        spread = max(0.0, float(tick.ask - tick.bid))
+        mid = max(float((tick.ask + tick.bid) * 0.5), float(self.point))
+        atr_ref = max(float(atr_reference), float(self.point), 1e-9)
+
+        abs_limit = None
+        if self.max_spread_points is not None and self.max_spread_points > 0 and self.point > 0:
+            abs_limit = float(self.max_spread_points) * float(self.point)
+
+        rel_atr = spread / atr_ref
+        rel_mid = spread / mid
+
+        enter = (
+            rel_atr >= float(getattr(self, "_spread_rel_atr_enter", 0.35))
+            or rel_mid >= float(getattr(self, "_spread_rel_mid_enter", 0.003))
+        )
+        if abs_limit is not None and spread >= abs_limit:
+            enter = True
+
+        exit_ok = (
+            rel_atr <= float(getattr(self, "_spread_rel_atr_exit", 0.25))
+            and rel_mid <= float(getattr(self, "_spread_rel_mid_exit", 0.002))
+        )
+        if abs_limit is not None:
+            exit_ok = exit_ok and spread <= abs_limit * 0.90
+
+        if getattr(self, "_spread_fuse_active", False):
+            if exit_ok:
+                self._spread_fuse_active = False
+                return False
+            hold = max(1.0, float(getattr(self, "_spread_fuse_hold_seconds", 2.0) or 2.0))
+            self.pause_until = max(self.pause_until, now + hold)
+            return True
+
+        if not enter:
+            return False
+
+        severity = 1.0
+        if abs_limit is not None and abs_limit > 0:
+            severity = max(severity, spread / abs_limit)
+        severity = max(
+            severity,
+            rel_atr / max(float(getattr(self, "_spread_rel_atr_enter", 0.35)), 1e-9),
+            rel_mid / max(float(getattr(self, "_spread_rel_mid_enter", 0.003)), 1e-9),
+        )
+        cooldown = float(self.extreme_cooldown) * min(3.0, max(1.0, severity))
+        cooldown = max(cooldown, float(getattr(self, "_spread_fuse_hold_seconds", 2.0) or 2.0))
+
+        self._spread_fuse_active = True
+        self.pause_until = max(self.pause_until, now + cooldown)
+        spread_pts = spread / max(float(self.point), 1e-9)
+        abs_pts = (abs_limit / self.point) if (abs_limit is not None and self.point > 0) else 0.0
+        Logger.log(
+            self.symbol,
+            "FUSE",
+            (
+                f"Spread fuse triggered | spread={spread_pts:.1f}pt/{abs_pts:.1f}pt | "
+                f"rel_atr={rel_atr:.3f} rel_mid={rel_mid:.4%} | cooldown={cooldown:.1f}s"
+            ),
+        )
+        return True
+
+    def _compute_dynamic_windows(self, predicted_net_vol: float) -> tuple[int, int, float]:
+        base_buy = max(0, int(getattr(self, "buy_window", self.window)))
+        base_sell = max(0, int(getattr(self, "sell_window", self.window)))
+        cap = float(self.max_net_vol or 0.0)
+        if cap <= 0:
+            return base_buy, base_sell, 0.0
+
+        pressure = max(-1.5, min(1.5, float(predicted_net_vol) / cap))
+        if pressure >= 0:
+            buy_scale = max(0.2, 1.0 - 0.8 * pressure)
+            sell_scale = min(2.5, 1.0 + 0.6 * pressure)
+        else:
+            p = abs(pressure)
+            buy_scale = min(2.5, 1.0 + 0.6 * p)
+            sell_scale = max(0.2, 1.0 - 0.8 * p)
+
+        dynamic_buy = max(0, int(round(base_buy * buy_scale)))
+        dynamic_sell = max(0, int(round(base_sell * sell_scale)))
+
+        if self.mode == "long":
+            dynamic_sell = 0
+        elif self.mode == "short":
+            dynamic_buy = 0
+
+        return dynamic_buy, dynamic_sell, pressure
+
+    def _rank_targets_by_utility(
+        self,
+        *,
+        side: str,
+        targets: list[float],
+        tick,
+        predicted_net_vol: float,
+        atr_reference: float,
+    ) -> list[float]:
+        if not targets:
+            return targets
+
+        cap = float(self.max_net_vol or 0.0)
+        spread = max(0.0, float(tick.ask - tick.bid))
+        lot = self._normalize_volume(self.lot)
+        ranked = []
+        for price in targets:
+            p_fill = self._estimate_fill_probability(
+                side=side,
+                price=float(price),
+                bid=float(tick.bid),
+                ask=float(tick.ask),
+                atr=atr_reference,
+            )
+            projected = float(predicted_net_vol) + (lot * p_fill if side == "buy" else -lot * p_fill)
+            directional_pressure = 0.0
+            if cap > 0:
+                directional_pressure = projected / cap
+                if side == "sell":
+                    directional_pressure *= -1.0
+                directional_pressure = max(0.0, min(2.0, directional_pressure))
+
+            reward = float(self.tp_dist) * p_fill
+            distance = (tick.ask - price) if side == "buy" else (price - tick.bid)
+            distance_penalty = max(0.0, float(distance) - float(self.step) * 0.5)
+            cost_penalty = spread + 0.2 * distance_penalty
+            risk_penalty = float(self.step) * 0.7 * directional_pressure
+            utility = reward - 0.35 * cost_penalty - risk_penalty
+            ranked.append((utility, price))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [price for _, price in ranked]
+
     def on_tick(self, ctx, *, action_collector=None):
         return self.update(
             orders_list=ctx.orders,
@@ -57,23 +199,6 @@ class GridUpdateMixin:
         if not self._is_market_open(tick):
             return
 
-        spread_check = self.risk_manager.check_spread(
-            bid=tick.bid,
-            ask=tick.ask,
-            max_spread_points=self.max_spread_points,
-            point=self.point,
-            extreme_cooldown=self.extreme_cooldown,
-            now=now,
-        )
-        if spread_check.triggered:
-            Logger.log(
-                self.symbol,
-                "FUSE",
-                f"Spread Exceeded | Current={spread_check.spread/self.point:6.1f}pt > Max={self.max_spread_points:6.1f}pt | Cooldown={self.extreme_cooldown}s",
-            )
-            self.pause_until = spread_check.pause_until
-            return
-
         self._maybe_adapt_params()
 
         atr_value = None
@@ -100,6 +225,10 @@ class GridUpdateMixin:
             # 优化说明：消除了重复的属性查找（self.use_atr, self.adaptive_enabled），内联合并逻辑
             if atr_value:
                 self._apply_atr_targets(float(atr_value))
+
+        atr_reference = self._resolve_atr_reference(atr_value)
+        if self._handle_spread_fuse(tick=tick, now=now, atr_reference=atr_reference):
+            return
 
         mid_price = (tick.bid + tick.ask) / 2
         
@@ -152,6 +281,12 @@ class GridUpdateMixin:
         long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(
             my_positions, my_orders
         )
+        predicted_net_vol = self._calc_predicted_net_exposure(
+            my_positions,
+            my_orders,
+            tick=tick,
+            atr=atr_reference,
+        )
         _pos_vol = long_vol + short_vol
 
         should_log_status = now - self._last_status_log_time > self._status_log_interval
@@ -176,6 +311,7 @@ class GridUpdateMixin:
                 f"Position: {len(my_positions):2d}pos {pos_vol:6.2f}lot PnL:{float_profit:+10.2f} | "
                 f"Orders: Buy={buy_orders:2d} Sell={sell_orders:2d} | "
                 f"Grid: Step={self.step:>{step_width}.{step_prec}f} ATR={atr_coef:4.2f}x | "
+                f"PredNet={predicted_net_vol:+7.2f} | "
                 f"Stats: Long={self._stats['long_profitable_count']:3d}cnt/{self._stats['long_profitable_amount']:+10.2f} "
                 f"Short={self._stats['short_profitable_count']:3d}cnt/{self._stats['short_profitable_amount']:+10.2f}"
             )
@@ -216,7 +352,7 @@ class GridUpdateMixin:
         # 对冲管理器（做空对冲多头）在 neutral/long 两种模式下均适用。
         # short 模式的做多对冲属于镜像逻辑，当前实现不覆盖，在此明确排除。
         if self.hedge_enabled and self.mode in ("long", "neutral") and self.max_net_vol is not None:
-            self._run_hedge_manager(my_positions, tick)
+            self._run_hedge_manager(my_positions, tick, predicted_net_vol=predicted_net_vol)
 
         positions_for_block = my_positions
         if self.mode == "long":
@@ -235,6 +371,7 @@ class GridUpdateMixin:
             pos_k_set = {round((p_price - self.anchor) / self.step) for p_price in existing_positions_prices}
 
         min_dist = max(self.stop_level, self.point * 10)
+        dynamic_buy_window, dynamic_sell_window, inventory_pressure = self._compute_dynamic_windows(predicted_net_vol)
 
         target_buys, target_sells = self.grid_calculator.build_targets(
             anchor=self.anchor,
@@ -243,12 +380,37 @@ class GridUpdateMixin:
             max_price=self.max_price,
             bid=tick.bid,
             ask=tick.ask,
-            buy_window=self.buy_window,
-            sell_window=self.sell_window,
+            buy_window=dynamic_buy_window,
+            sell_window=dynamic_sell_window,
             mode=self.mode,
             min_dist=min_dist,
             blocked_k=pos_k_set,
         )
+
+        target_buys = self._rank_targets_by_utility(
+            side="buy",
+            targets=target_buys,
+            tick=tick,
+            predicted_net_vol=predicted_net_vol,
+            atr_reference=atr_reference,
+        )
+        target_sells = self._rank_targets_by_utility(
+            side="sell",
+            targets=target_sells,
+            tick=tick,
+            predicted_net_vol=predicted_net_vol,
+            atr_reference=atr_reference,
+        )
+
+        if should_log_status and self.max_net_vol is not None:
+            Logger.log(
+                self.symbol,
+                "STATUS",
+                (
+                    f"magic={self.magic} | WindowDyn B:{dynamic_buy_window}/{int(self.buy_window)} "
+                    f"S:{dynamic_sell_window}/{int(self.sell_window)} | pressure={inventory_pressure:+.2f}"
+                ),
+            )
 
         if should_log_status and self.max_net_vol is not None and self.lot > 0:
             # [P-09] 复用入口处已预计算的 exposure，无需重复调用 _calc_exposure
@@ -282,14 +444,14 @@ class GridUpdateMixin:
                 current = short_vol + pending_sell_vol
                 remaining = cap - current
             else:
-                if net_vol >= 0:
+                if predicted_net_vol >= 0:
                     side = "buy"
-                    current = net_vol
-                    remaining = cap - net_vol
+                    current = predicted_net_vol
+                    remaining = cap - predicted_net_vol
                 else:
                     side = "sell"
-                    current = -net_vol
-                    remaining = cap + net_vol
+                    current = -predicted_net_vol
+                    remaining = cap + predicted_net_vol
 
             # 优化说明：已移除内嵌函数 _cap_cell
 
@@ -412,6 +574,12 @@ class GridUpdateMixin:
                 long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol = self._calc_exposure(
                     my_positions, my_orders
                 )
+                predicted_net_vol = self._calc_predicted_net_exposure(
+                    my_positions,
+                    my_orders,
+                    tick=tick,
+                    atr=atr_reference,
+                )
 
         # B. 补单 (带库存风控)
         # [P-02/P-09] 使用入口预计算的 exposure 和持仓计数，无需额外遍历
@@ -463,6 +631,9 @@ class GridUpdateMixin:
                     pending_buy_vol=pending_buy_vol,
                     pending_sell_vol=pending_sell_vol,
                     net_vol=net_vol,
+                    predicted_net_vol=predicted_net_vol,
+                    tick=tick,
+                    atr_for_prob=atr_reference,
                     long_pos_count=long_pos_count,
                     short_pos_count=short_pos_count,
                     placed_count=placed_count,
@@ -472,6 +643,7 @@ class GridUpdateMixin:
                 pending_buy_vol = result["pending_buy_vol"]
                 pending_sell_vol = result["pending_sell_vol"]
                 net_vol = result["net_vol"]
+                predicted_net_vol = result["predicted_net_vol"]
                 
                 if side == "buy": placed_buy = result["placed_side"]
                 else: placed_sell = result["placed_side"]
