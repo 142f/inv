@@ -107,7 +107,7 @@ class StrategyUpdater:
     _GENERAL_KEYS = (
         "mode", "out_of_range_action", "recenter_steps", "recenter_cooldown",
         "max_long_pos", "max_short_pos", "max_long_vol", "max_short_vol",
-        "max_net_vol", "max_spread_points", "extreme_mode", "extreme_cooldown",
+        "max_net_vol", "max_spread_points", "extreme_cooldown",
         "max_new_orders_per_update", "auto_trim",
     )
 
@@ -122,12 +122,26 @@ class StrategyUpdater:
         "step", "tp_dist", "sl_dist", "lot", "window", "buy_window",
         "sell_window", "min_price", "max_price", "mode", "auto_trim",
     )
+    _DIRECT_KEYS = (
+        "symbol", "magic", "enabled", "step", "tp_dist", "sl_dist", "lot", "window",
+        "buy_window", "sell_window", "min_p", "max_p",
+    )
+    _KNOWN_CONFIG_KEYS = frozenset(
+        _DIRECT_KEYS + _ATR_KEYS + _ADAPTIVE_KEYS + _GENERAL_KEYS + _HEDGE_KEYS
+    )
 
     def __init__(self, broker):
         self.broker = broker
 
     def apply(self, strategy: GridStrategy, cfg: dict):
         cfg = normalize_config(cfg)
+        unknown_keys = [key for key in cfg.keys() if key not in self._KNOWN_CONFIG_KEYS]
+        if unknown_keys:
+            Logger.log(
+                strategy.symbol,
+                "CONFIG_ERROR",
+                f"Ignored unknown config keys: {', '.join(sorted(unknown_keys))}",
+            )
         current_state = strategy.get_state()
         current_state.pop("enabled", None)
         cleared_orders = False
@@ -138,9 +152,16 @@ class StrategyUpdater:
 
         new_symbol = cfg.get("symbol", strategy.symbol)
         if strategy.symbol != new_symbol:
-            strategy.clear_old_orders()
+            if not self.broker.ensure_symbol(new_symbol):
+                strategy.enabled = False
+                Logger.log(
+                    "SYSTEM",
+                    "ERROR",
+                    f"Strategy {strategy.magic} symbol switch failed: {strategy.symbol} -> {new_symbol}",
+                )
+                return
+            strategy.clear_old_orders(force_all=True)
             cleared_orders = True
-            self.broker.ensure_symbol(new_symbol)
             strategy.set_symbol(new_symbol, reset_runtime_state=True)
             current_state = {}
             Logger.log("系统", "更新", f"策略 {strategy.magic} 交易品种变更: {before['symbol']} -> {strategy.symbol}")
@@ -172,6 +193,11 @@ class StrategyUpdater:
             strategy.clear_old_orders()
 
         strategy.set_state(current_state)
+        if atr_changed:
+            strategy._last_atr_value = None
+            strategy._last_atr_time = 0.0
+        if adaptive_changed:
+            strategy._last_adapt_bar_time = 0.0
         Logger.log(
             "系统", "更新",
             f"策略已更新: {strategy.symbol} (Magic: {strategy.magic}, 状态: {strategy.enabled}, "
@@ -195,6 +221,9 @@ class StrategyUpdater:
         changed = False
         for key in keys:
             if key not in cfg:
+                continue
+            if not hasattr(strategy, key):
+                Logger.log(strategy.symbol, "CONFIG_ERROR", f"Ignored unsupported key in hot update: {key}")
                 continue
             value = cfg[key]
             if coerce_value is not None:
@@ -325,7 +354,15 @@ class StrategyManager:
         if magic is None:
             Logger.log("系统", "配置错误", "策略配置缺失 magic 字段，跳过加载。")
             return None
-        return magic
+        try:
+            parsed = int(float(magic))
+        except (TypeError, ValueError):
+            Logger.log("SYSTEM", "CONFIG_ERROR", f"Invalid magic value: {magic}")
+            return None
+        if parsed <= 0:
+            Logger.log("SYSTEM", "CONFIG_ERROR", f"magic must be > 0: {magic}")
+            return None
+        return parsed
 
     def _sync_configs(self, configs: list[dict]) -> set[int]:
         new_magics: set[int] = set()
@@ -340,7 +377,7 @@ class StrategyManager:
     def _upsert_strategy(self, magic: int, cfg: dict):
         strategy = self.active.get(magic)
         if strategy is None:
-            self._add_strategy(cfg)
+            self._add_strategy(magic, cfg)
             return
         self._updater.apply(strategy, cfg)
 
@@ -350,7 +387,7 @@ class StrategyManager:
             if magic not in new_magics:
                 self._remove_strategy(magic)
 
-    def _add_strategy(self, cfg: dict):
+    def _add_strategy(self, magic: int, cfg: dict):
         Logger.log(
             "系统", "新增",
             f"加载新策略 {cfg.get('symbol')} (Magic: {cfg.get('magic')}, 状态: {cfg.get('enabled', True)})"
@@ -359,13 +396,15 @@ class StrategyManager:
         if not self.broker.ensure_symbol(symbol):
             Logger.log("系统", "错误", f"交易品种由于网络或权限暂不可用: {symbol}")
             return
-        strategy = build_strategy(cfg, lock=self.broker.lock, datafeed=self.datafeed)
-        self.active[cfg["magic"]] = strategy
-        strategy.clear_old_orders()
+        normalized_cfg = dict(cfg)
+        normalized_cfg["magic"] = magic
+        strategy = build_strategy(normalized_cfg, lock=self.broker.lock, datafeed=self.datafeed)
+        self.active[magic] = strategy
+        strategy.clear_old_orders(force_all=True)
 
     def _remove_strategy(self, magic: int):
         strategy = self.active.pop(magic, None)
         if not strategy:
             return
         Logger.log("系统", "移除", f"卸载并清理策略 {strategy.symbol} (Magic: {magic})")
-        strategy.clear_old_orders()
+        strategy.clear_old_orders(force_all=True)

@@ -62,9 +62,10 @@ def iter_filling_candidates(default_mode):
 
 class QueuedResult:
     def __init__(self):
-        self.retcode = mt5.TRADE_RETCODE_DONE
+        self.retcode = -1
         self.comment = "QUEUED"
         self.order = 0
+        self.queued = True
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +345,8 @@ class GridSymbolMixin:
 
     def _normalize_volume(self, vol):
         if getattr(self, "vol_step", 0) > 0:
-            steps = round(vol / self.vol_step)
+            # Floor to broker step to avoid accidental volume inflation by rounding up.
+            steps = int((float(vol) / self.vol_step) + 1e-12)
             vol = steps * self.vol_step
             
         # [优化]：移除多余的 getattr 查询。进入此处时 self.vol_precision 已确保被初始化。

@@ -374,7 +374,11 @@ class GridUpdateMixin:
                        (is_buy and self.mode == "short") or (not is_buy and self.mode == "long"):
                        
                         res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
-                        if res is not None and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+                        if (
+                            res is not None
+                            and (not getattr(res, "queued", False))
+                            and res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED)
+                        ):
                             removed_tickets.add(o.ticket)
                             Logger.log(self.symbol, "TRIM", f"安全撤单(越界/模式冲突/目标外): {op}")
 

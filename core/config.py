@@ -16,6 +16,7 @@ class ConfigValidationError(Exception):
 
 class ConfigLoader:
     REQUIRED_FIELDS = ["symbol", "step", "tp_dist", "lot", "magic"]
+    ALLOWED_MODES = {"neutral", "long", "short"}
 
     def __init__(self, config_path: Path | None = None):
         project_root = Path(__file__).resolve().parents[1]
@@ -82,10 +83,18 @@ class ConfigLoader:
         if missing:
             raise ConfigValidationError(f"Missing required fields: {', '.join(missing)}")
 
-        magic = cfg.get("magic")
+        magic = self._parse_magic(cfg.get("magic"))
         if magic in seen_magic:
             raise ConfigValidationError(f"Duplicate magic: {magic}")
         seen_magic.add(magic)
+        cfg["magic"] = magic
+
+        mode = cfg.get("mode")
+        if mode is not None:
+            normalized_mode = str(mode).strip().lower()
+            if normalized_mode not in self.ALLOWED_MODES:
+                raise ConfigValidationError(f"Invalid mode: {mode}")
+            cfg["mode"] = normalized_mode
 
         self._ensure_positive(cfg, "step")
         self._ensure_positive(cfg, "tp_dist")
@@ -93,6 +102,41 @@ class ConfigLoader:
         # window 是可选字段，有默认值，只在配置了的情况下验证
         if "window" in cfg:
             self._ensure_positive(cfg, "window", allow_zero=False)
+
+        self._ensure_positive(cfg, "atr_period")
+        self._ensure_positive(cfg, "atr_factor")
+        self._ensure_positive(cfg, "max_net_vol")
+        self._ensure_positive(cfg, "max_long_vol")
+        self._ensure_positive(cfg, "max_short_vol")
+        self._ensure_positive(cfg, "max_gross_vol")
+        self._ensure_positive(cfg, "hedge_tranches")
+        self._ensure_positive(cfg, "hedge_entry_steps")
+        self._ensure_positive(cfg, "hedge_exit_steps")
+        self._ensure_positive(cfg, "hedge_cooldown")
+        self._ensure_positive(cfg, "hedge_vol_lookback")
+        self._ensure_positive(cfg, "hedge_vol_window")
+        self._ensure_positive(cfg, "hedge_vol_base")
+        self._ensure_positive(cfg, "be_trigger_steps")
+        self._ensure_positive(cfg, "be_buffer_points", allow_zero=True)
+
+        self._ensure_non_negative(cfg, "atr_update_seconds")
+        self._ensure_non_negative(cfg, "atr_change_threshold")
+        self._ensure_non_negative(cfg, "recenter_cooldown")
+        self._ensure_non_negative(cfg, "extreme_cooldown")
+        self._ensure_non_negative(cfg, "max_spread_points")
+
+        self._ensure_between(cfg, "hedge_fraction", low=0.0, high=1.0, inclusive=True)
+        self._ensure_between(cfg, "hedge_vol_quantile", low=0.0, high=1.0, inclusive=True)
+        self._ensure_between(cfg, "adaptive_quantile_low", low=0.0, high=1.0, inclusive=True)
+        self._ensure_between(cfg, "adaptive_quantile_high", low=0.0, high=1.0, inclusive=True)
+
+        if "adaptive_quantile_low" in cfg and "adaptive_quantile_high" in cfg:
+            q_low = float(cfg["adaptive_quantile_low"])
+            q_high = float(cfg["adaptive_quantile_high"])
+            if q_low >= q_high:
+                raise ConfigValidationError(
+                    f"adaptive_quantile_low({q_low}) must be less than adaptive_quantile_high({q_high})"
+                )
 
         min_p = float(cfg.get("min_p", 0))
         max_p = float(cfg.get("max_p", 0))
@@ -109,3 +153,37 @@ class ConfigLoader:
             raise ConfigValidationError(f"Field {key} is not numeric")
         if value < 0 or (not allow_zero and value <= 0):
             raise ConfigValidationError(f"Field {key} must be greater than 0")
+
+    @staticmethod
+    def _parse_magic(value) -> int:
+        try:
+            magic = int(float(value))
+        except Exception:
+            raise ConfigValidationError(f"Field magic is not numeric: {value}")
+        if magic <= 0:
+            raise ConfigValidationError(f"Field magic must be greater than 0: {value}")
+        return magic
+
+    def _ensure_non_negative(self, cfg: dict, key: str):
+        if key not in cfg:
+            return
+        try:
+            value = float(cfg[key])
+        except Exception:
+            raise ConfigValidationError(f"Field {key} is not numeric")
+        if value < 0:
+            raise ConfigValidationError(f"Field {key} must be >= 0")
+
+    def _ensure_between(self, cfg: dict, key: str, *, low: float, high: float, inclusive: bool):
+        if key not in cfg:
+            return
+        try:
+            value = float(cfg[key])
+        except Exception:
+            raise ConfigValidationError(f"Field {key} is not numeric")
+        if inclusive:
+            if value < low or value > high:
+                raise ConfigValidationError(f"Field {key} must be in [{low}, {high}]")
+        else:
+            if value <= low or value >= high:
+                raise ConfigValidationError(f"Field {key} must be in ({low}, {high})")

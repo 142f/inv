@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -187,6 +188,10 @@ class Runner:
         self._broker = broker
         self._strategy_manager = strategy_manager
         self._datafeed = strategy_manager.datafeed
+        queue_flag = str(os.getenv("INV_USE_ACTION_QUEUE", "0")).strip().lower()
+        self._use_action_queue = queue_flag in {"1", "true", "yes", "y", "on"}
+        if self._use_action_queue:
+            Logger.log("SYSTEM", "WARN", "INV_USE_ACTION_QUEUE is enabled; queued execution may delay state convergence")
 
     def run(self, *, cycles: int, max_seconds: float, interval: float) -> None:
         cycles = max(1, int(cycles))
@@ -325,6 +330,8 @@ class Runner:
         positions_by_key: Dict[Tuple[int, str], List[Any]],
     ) -> None:
         actions = []
+        action_collector = actions if self._use_action_queue else None
+        cycle_failed = False
         try:
             ctx = self._build_strategy_context(
                 strategy,
@@ -336,7 +343,7 @@ class Runner:
 
             # 保留原生 CPython 高速 hasattr 优化，移除多余字典结构
             if hasattr(strategy, "on_tick"):
-                strategy.on_tick(ctx, action_collector=actions)
+                strategy.on_tick(ctx, action_collector=action_collector)
             else:
                 strategy.update(
                     orders_list=ctx.orders,
@@ -345,12 +352,14 @@ class Runner:
                     orders_filtered=True,
                     positions_filtered=True,
                     atr=ctx.atr,
-                    action_collector=actions,
+                    action_collector=action_collector,
                 )
         except Exception as exc:
+            cycle_failed = True
             Logger.log(strategy.symbol, "异常", f"策略执行生命周期内发生崩溃 (magic={strategy.magic}): {exc}")
 
-        self._flush_actions(strategy, actions)
+        if self._use_action_queue and (not cycle_failed):
+            self._flush_actions(strategy, actions)
 
     def _build_strategy_context(
         self,

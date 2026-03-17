@@ -5,8 +5,8 @@ from core.logger import Logger
 from .runtime_mixins import iter_filling_candidates
 
 class GridOrdersMixin:
-    # [P-01] 设为 True 以开启 order_check 预检（DEBUG 用途）；
-    # 默认关闭以减少约 50% 的 MT5 API 调用开销。
+    # [P-01] 璁句负 True 浠ュ紑鍚?order_check 棰勬锛圖EBUG 鐢ㄩ€旓級锛?
+    # 榛樿鍏抽棴浠ュ噺灏戠害 50% 鐨?MT5 API 璋冪敤寮€閿€銆?
     _DEBUG_ORDER_CHECK = False
 
     def _order_check(self, request):
@@ -39,16 +39,19 @@ class GridOrdersMixin:
         for mode in iter_filling_candidates(self.filling_mode):
             req = dict(request)
             req['type_filling'] = mode
-            # [P-01] order_check 仅在 DEBUG 模式下调用，减少约 50% 的 MT5 API 开销。
-            # 不可恢复错误（如余额不足）会由 _dispatch_request 返回的 retcode 捕获，
-            # 调用方 _place_limit_order 会通过 _handle_order_error 统一处理。
+            # [P-01] order_check 浠呭湪 DEBUG 妯″紡涓嬭皟鐢紝鍑忓皯绾?50% 鐨?MT5 API 寮€閿€銆?
+            # 涓嶅彲鎭㈠閿欒锛堝浣欓涓嶈冻锛変細鐢?_dispatch_request 杩斿洖鐨?retcode 鎹曡幏锛?
+            # 璋冪敤鏂?_place_limit_order 浼氶€氳繃 _handle_order_error 缁熶竴澶勭悊銆?
             if self._DEBUG_ORDER_CHECK:
                 check = self._order_check(req)
                 if check is not None:
                     check_rc = getattr(check, "retcode", 0)
                     if check_rc not in (0, 10030):
-                        Logger.log(self.symbol, "WARN",
-                            f"order_check 预检拒绝 RetCode={check_rc} {getattr(check, 'comment', '')}，中止下单")
+                        Logger.log(
+                            self.symbol,
+                            "WARN",
+                            f"order_check rejected RetCode={check_rc} {getattr(check, 'comment', '')}; skip sending",
+                        )
                         return None
             last_result = self._dispatch_request(req)
             if last_result is None:
@@ -56,15 +59,15 @@ class GridOrdersMixin:
             if last_result.retcode != 10030:
                 return last_result
 
-        # [修复 L-03] 所有 filling 模式均返回 10030（不支持的填充方式）时，
-        # 直接返回最后一次结果而非重发不含 type_filling 的请求（必然再次失败）。
+        # [淇 L-03] 鎵€鏈?filling 妯″紡鍧囪繑鍥?10030锛堜笉鏀寔鐨勫～鍏呮柟寮忥級鏃讹紝
+        # 鐩存帴杩斿洖鏈€鍚庝竴娆＄粨鏋滆€岄潪閲嶅彂涓嶅惈 type_filling 鐨勮姹傦紙蹇呯劧鍐嶆澶辫触锛夈€?
         Logger.log(self.symbol, "WARN",
             f"All filling modes rejected (10030) for price={request.get('price')} "
             f"type={request.get('type')}; giving up.")
         return last_result
 
     def _index_orders(self, my_orders):
-        # [P-12] 仅在挂单集合（ticket 集）实际变化时重建索引，避免每 tick 全量重建
+        # [P-12] 浠呭湪鎸傚崟闆嗗悎锛坱icket 闆嗭級瀹為檯鍙樺寲鏃堕噸寤虹储寮曪紝閬垮厤姣?tick 鍏ㄩ噺閲嶅缓
         new_tickets = frozenset(o.ticket for o in my_orders)
         if getattr(self, '_last_order_tickets', None) == new_tickets:
             return
@@ -95,7 +98,7 @@ class GridOrdersMixin:
                 if (is_buy and sl >= price) or ((not is_buy) and sl <= price):
                     sl = None
             vol = self._normalize_volume(self.lot)
-            # [P-10] atr_coef / price_width / sl_str 延迟到真正需要输出日志时才计算
+            # [P-10] atr_coef / price_width / sl_str 寤惰繜鍒扮湡姝ｉ渶瑕佽緭鍑烘棩蹇楁椂鎵嶈绠?
 
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
@@ -131,11 +134,11 @@ class GridOrdersMixin:
 
             if result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
                 if result.retcode == 10004:  # REQUOTE
-                    # [修复 L-11] 重试前刷新 tick 并校验价格仍与市场保持合法距离，
-                    # 避免在剧烈行情下用旧价格反复 requote。
+                    # [淇 L-11] 閲嶈瘯鍓嶅埛鏂?tick 骞舵牎楠屼环鏍间粛涓庡競鍦轰繚鎸佸悎娉曡窛绂伙紝
+                    # 閬垮厤鍦ㄥ墽鐑堣鎯呬笅鐢ㄦ棫浠锋牸鍙嶅 requote銆?
                     fresh_tick = self._get_tick()
                     if fresh_tick is None or fresh_tick.bid <= 0:
-                        Logger.log(self.symbol, "WARN", "Requote 后无法获取最新 tick，放弃下单")
+                        Logger.log(self.symbol, "WARN", "No valid tick after requote; skip order")
                         return None
                     min_dist = max(self.stop_level, self.point * 10)
                     too_close = (
@@ -143,10 +146,13 @@ class GridOrdersMixin:
                         (not is_buy and (price - fresh_tick.bid) < min_dist)
                     )
                     if too_close:
-                        Logger.log(self.symbol, "WARN",
-                            f"Requote 后价格 {price:.{self.digits}f} 距市场过近 (<{min_dist:.{self.digits}f})，放弃下单")
+                        Logger.log(
+                            self.symbol,
+                            "WARN",
+                            f"Price {price:.{self.digits}f} too close after requote (<{min_dist:.{self.digits}f}); skip",
+                        )
                         return None
-                    Logger.log(self.symbol, "WARN", "Requote，已确认价格合法，重试中...")
+                    Logger.log(self.symbol, "WARN", "Requote锛屽凡纭浠锋牸鍚堟硶锛岄噸璇曚腑...")
                     time.sleep(0.1)
                     result = self._send_with_fillings(request)
                     if result is None:
@@ -189,28 +195,28 @@ class GridOrdersMixin:
         return self._place_limit_order("sell", price)
 
     def _handle_order_error(self, retcode, comment, price):
-        """统一处理订单错误"""
+        """缁熶竴澶勭悊璁㈠崟閿欒"""
         if retcode == 10018: # MARKET_CLOSED
-            Logger.log(self.symbol, "SLEEP", "市场休市，暂停运行 5 分钟")
+            Logger.log(self.symbol, "SLEEP", "甯傚満浼戝競锛屾殏鍋滆繍琛?5 鍒嗛挓")
             self.pause_until = time.time() + 300
         elif retcode == 10017: # TRADE_DISABLED
             Logger.log(self.symbol, 'WARN', 'Trade disabled. Check terminal/account/symbol permissions.')
             self.pause_until = time.time() + 60
         elif retcode == 10027: # CLIENT_DISABLES_AT
-            Logger.log(self.symbol, "CRITICAL", "MT5 终端 '自动交易' (Algo Trading) 未开启！请在 MT5 软件上方点击 'Algo Trading' 按钮。")
-            self.enabled = False # 必须停止，否则会死循环
+            Logger.log(self.symbol, "CRITICAL", "MT5 terminal Algo Trading is disabled; strategy stopped")
+            self.enabled = False # 蹇呴』鍋滄锛屽惁鍒欎細姝诲惊鐜?
         elif retcode == 10004: # REQUOTE
-            Logger.log(self.symbol, "WARN", "价格重新报价 (Requote)，稍后重试")
+            Logger.log(self.symbol, "WARN", "Requote received; retry later")
             self.pause_until = time.time() + 1
         elif retcode == 10013: # INVALID_REQUEST
-            Logger.log(self.symbol, "ERROR", "无效请求参数")
-            self.enabled = False # 致命错误，停止策略
+            Logger.log(self.symbol, "ERROR", "鏃犳晥璇锋眰鍙傛暟")
+            self.enabled = False # 鑷村懡閿欒锛屽仠姝㈢瓥鐣?
         elif retcode == 10014: # INVALID_VOLUME
-            Logger.log(self.symbol, "ERROR", "无效手数")
+            Logger.log(self.symbol, "ERROR", "鏃犳晥鎵嬫暟")
             self.enabled = False
         else:
             Logger.log(self.symbol, "ORDER_FAIL", f"RetCode={retcode} | Price={price:.{self.digits}f} | Reason: {comment}")
-            # 通用错误暂停 5 秒，防止刷屏
+            # 閫氱敤閿欒鏆傚仠 5 绉掞紝闃叉鍒峰睆
             self.pause_until = time.time() + 5
 
     def _get_orders_to_keep(self, my_orders):
@@ -218,46 +224,68 @@ class GridOrdersMixin:
         sell_orders = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT]
         buy_orders.sort(key=lambda x: x.price_open, reverse=True)
         sell_orders.sort(key=lambda x: x.price_open)
-        buy_to_keep = buy_orders[:self.window] if self.window > 0 else []
-        sell_to_keep = sell_orders[:self.window] if self.window > 0 else []
+        buy_keep_n = max(0, int(getattr(self, "buy_window", self.window)))
+        sell_keep_n = max(0, int(getattr(self, "sell_window", self.window)))
+
+        # Enforce directional mode when trimming existing pending orders.
+        mode = str(getattr(self, "mode", "neutral") or "neutral").strip().lower()
+        if mode == "long":
+            sell_keep_n = 0
+        elif mode == "short":
+            buy_keep_n = 0
+
+        buy_to_keep = buy_orders[:buy_keep_n]
+        sell_to_keep = sell_orders[:sell_keep_n]
         return buy_to_keep, sell_to_keep
 
     def clear_old_orders(self, force_all: bool = False):
-        """清理旧网格挂单。
-        - enabled=False 时：撤销全部同 magic 挂单（4个窗口单全部撤销）
-        - enabled=True  时：保留价格最近的 window 数量个订单，删除多余部分
+        """娓呯悊鏃х綉鏍兼寕鍗曘€?
+        - enabled=False 鏃讹細鎾ら攢鍏ㄩ儴鍚?magic 鎸傚崟锛?涓獥鍙ｅ崟鍏ㄩ儴鎾ら攢锛?
+        - enabled=True  鏃讹細淇濈暀浠锋牸鏈€杩戠殑 window 鏁伴噺涓鍗曪紝鍒犻櫎澶氫綑閮ㄥ垎
         """
         orders = self._mt5_call(mt5.orders_get, symbol=self.symbol)
         my_orders = [o for o in orders if o.magic == self.magic] if orders else []
 
         if not my_orders:
-            Logger.log(self.symbol, "CLEANUP", f"Magic={self.magic:04d} | 无历史挂单，跳过清理")
+            Logger.log(self.symbol, "CLEANUP", f"Magic={self.magic:04d} | 鏃犲巻鍙叉寕鍗曪紝璺宠繃娓呯悊")
             return
 
-        # enabled=False：全部撤销，无需 tick 信息
+        # enabled=False锛氬叏閮ㄦ挙閿€锛屾棤闇€ tick 淇℃伅
         if force_all or (not self.enabled):
             buy_to_keep, sell_to_keep = [], []
         else:
-            tick = self._get_tick()
-            if tick is None:
-                return
             buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
 
-        # [修复 L-08] 改用 ticket 集合做 O(1) 查找，避免依赖对象身份比较（可能误判）
+        # [淇 L-08] 鏀圭敤 ticket 闆嗗悎鍋?O(1) 鏌ユ壘锛岄伩鍏嶄緷璧栧璞¤韩浠芥瘮杈冿紙鍙兘璇垽锛?
         buy_keep_tickets = {o.ticket for o in buy_to_keep}
         sell_keep_tickets = {o.ticket for o in sell_to_keep}
         buy_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT and o.ticket not in buy_keep_tickets]
         sell_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT and o.ticket not in sell_keep_tickets]
 
-        # 删除超出窗口的订单（disabled 时即为全部）
+        # 鍒犻櫎瓒呭嚭绐楀彛鐨勮鍗曪紙disabled 鏃跺嵆涓哄叏閮級
+        removed_buy = 0
+        removed_sell = 0
+        failed_remove = 0
+        queued_remove = 0
         for o in buy_to_remove + sell_to_remove:
             res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
             if res is None:
+                failed_remove += 1
+                continue
+            if getattr(res, "queued", False):
+                queued_remove += 1
                 continue
             if res.retcode == 10018: # MARKET_CLOSED
-                Logger.log(self.symbol, "WARN", "市场休市，无法撤单，暂停运行 5 分钟")
+                Logger.log(self.symbol, "WARN", "甯傚満浼戝競锛屾棤娉曟挙鍗曪紝鏆傚仠杩愯 5 鍒嗛挓")
                 self.pause_until = time.time() + 300
                 return
+            if res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+                if o.type == mt5.ORDER_TYPE_BUY_LIMIT:
+                    removed_buy += 1
+                elif o.type == mt5.ORDER_TYPE_SELL_LIMIT:
+                    removed_sell += 1
+            else:
+                failed_remove += 1
 
         Logger.log(
             self.symbol,
@@ -265,24 +293,25 @@ class GridOrdersMixin:
             f"Magic={self.magic:04d} | "
             f"{'[FORCE_ALL] ' if force_all else ''}"
             f"{'[DISABLED] ' if not self.enabled else ''}"
-            f"历史挂单清理完成 | 删除买单{len(buy_to_remove)}个 卖单{len(sell_to_remove)}个"
-            f"，保留买单{len(buy_to_keep)}个 卖单{len(sell_to_keep)}个",
+            f"Cleanup finished | removed buy={removed_buy} sell={removed_sell} | "
+            f"kept buy={len(buy_to_keep)} sell={len(sell_to_keep)} | "
+            f"fail={failed_remove} queued={queued_remove}",
         )
 
     # ------------------------
     # Risk / caps helpers
     # ------------------------
     def _calc_exposure(self, my_positions, my_orders):
-        """计算当前持仓和挂单的敞口情况。
+        """璁＄畻褰撳墠鎸佷粨鍜屾寕鍗曠殑鏁炲彛鎯呭喌銆?
         
         Args:
-            my_positions: 本策略的持仓列表
-            my_orders: 本策略的挂单列表
+            my_positions: 鏈瓥鐣ョ殑鎸佷粨鍒楄〃
+            my_orders: 鏈瓥鐣ョ殑鎸傚崟鍒楄〃
             
         Returns:
             tuple: (long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol)
         """
-        # [P-03] 单次遍历同时累计所有维度，替代原来 4 次独立生成器遍历
+        # [P-03] 鍗曟閬嶅巻鍚屾椂绱鎵€鏈夌淮搴︼紝鏇夸唬鍘熸潵 4 娆＄嫭绔嬬敓鎴愬櫒閬嶅巻
         long_vol = 0.0
         short_vol = 0.0
         for p in my_positions:
@@ -291,8 +320,8 @@ class GridOrdersMixin:
             else:
                 short_vol += p.volume
 
-        # 挂单量计算 - 使用 volume_current（当前剩余量）而非 volume_initial（初始量）
-        # 因为部分成交的订单应该只计算剩余部分
+        # 鎸傚崟閲忚绠?- 浣跨敤 volume_current锛堝綋鍓嶅墿浣欓噺锛夎€岄潪 volume_initial锛堝垵濮嬮噺锛?
+        # 鍥犱负閮ㄥ垎鎴愪氦鐨勮鍗曞簲璇ュ彧璁＄畻鍓╀綑閮ㄥ垎
         pending_buy_vol = 0.0
         pending_sell_vol = 0.0
         for o in my_orders:
@@ -302,20 +331,22 @@ class GridOrdersMixin:
             elif o.type == mt5.ORDER_TYPE_SELL_LIMIT:
                 pending_sell_vol += vol
 
-        # 净持仓 = (多头 + 待买) - (空头 + 待卖)
+        # 鍑€鎸佷粨 = (澶氬ご + 寰呬拱) - (绌哄ご + 寰呭崠)
         net_vol = (long_vol + pending_buy_vol) - (short_vol + pending_sell_vol)
 
         return long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol
 
     def _allow_side(self, side, long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
                      *, long_pos_count: int = 0, short_pos_count: int = 0):
+        # Keep risk checks aligned with actual order volume sent to broker.
+        effective_lot = self._normalize_volume(self.lot)
         return self.risk_manager.check_inventory_limits(
             long_vol=long_vol,
             short_vol=short_vol,
             pending_buy_vol=pending_buy_vol,
             pending_sell_vol=pending_sell_vol,
             net_vol=net_vol,
-            lot=self.lot,
+            lot=effective_lot,
             side=side,
             mode=self.mode,
             max_net_vol=self.max_net_vol,
@@ -363,6 +394,7 @@ class GridOrdersMixin:
         skip_cap = 0
         skip_risk = 0
         placed_side = 0
+        effective_lot = self._normalize_volume(self.lot)
 
         for price in targets:
             if placed_count >= self.max_new_orders_per_update:
@@ -397,11 +429,15 @@ class GridOrdersMixin:
                 placed_count += 1
                 placed_side += 1
                 if side == "buy":
-                    pending_buy_vol += self.lot
-                    net_vol += self.lot
+                    pending_buy_vol += effective_lot
+                    net_vol += effective_lot
                 else:
-                    pending_sell_vol += self.lot
-                    net_vol -= self.lot
+                    pending_sell_vol += effective_lot
+                    net_vol -= effective_lot
+            elif placed is None:
+                # 涓嬪崟澶辫触鏃剁粓姝㈠綋鍓嶈竟琛ュ崟锛岄伩鍏嶅悓涓€杞腑杩炵画鎷掑崟
+                skip_risk += 1
+                break
 
         return {
             "placed_count": placed_count,
