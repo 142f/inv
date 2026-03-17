@@ -7,7 +7,7 @@ import traceback
 
 from core.logger import Logger
 from core.broker import MT5Broker
-from core.config import ConfigLoader
+from core.infra import ConfigRepository
 from core.strategy.manager import StrategyManager
 from core.runtime import Runner
 
@@ -61,7 +61,7 @@ def main(argv=None):
 
     # 【修改点】将组件初始化也纳入 try-except 保护伞，防止配置文件格式错误导致进程裸奔退出
     try:
-        config_loader = ConfigLoader()
+        config_loader = ConfigRepository()
         strategy_manager = StrategyManager(broker, config_loader)
         runner = Runner(broker, strategy_manager)
 

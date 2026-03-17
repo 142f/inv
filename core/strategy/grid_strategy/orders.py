@@ -1,8 +1,8 @@
 # Auto-extracted from core/strategy_lib.py during refactor.
-import math
 import MetaTrader5 as mt5
 import time
 from core.logger import Logger
+from core.strategy.grid.exposure_model import calc_predicted_net_exposure, estimate_fill_probability
 from .runtime_mixins import iter_filling_candidates
 
 class GridOrdersMixin:
@@ -335,26 +335,15 @@ class GridOrdersMixin:
     # Risk / caps helpers
     # ------------------------
     def _estimate_fill_probability(self, *, side: str, price: float, bid: float, ask: float, atr: float | None = None) -> float:
-        """Estimate pending-order fill probability using distance/volatility/spread."""
-        if bid <= 0 or ask <= 0 or ask < bid:
-            return 0.0
-
-        side_norm = str(side).lower().strip()
-        if side_norm not in {"buy", "sell"}:
-            return 0.0
-
-        distance = (ask - price) if side_norm == "buy" else (price - bid)
-        distance = max(0.0, float(distance))
-        spread = max(0.0, float(ask - bid))
-        point = max(float(getattr(self, "point", 0.0) or 0.0), 1e-9)
-        base_step = max(float(getattr(self, "step", 0.0) or 0.0), point * 10.0)
-        atr_scale = max(0.0, float(atr or 0.0)) * 0.5
-        scale = max(base_step, atr_scale, spread * 4.0, point)
-
-        prob = math.exp(-distance / max(scale, 1e-9))
-        spread_points = spread / point
-        prob = prob / (1.0 + 0.05 * spread_points)
-        return float(max(0.01, min(0.995, prob)))
+        return estimate_fill_probability(
+            side=side,
+            price=float(price),
+            bid=float(bid),
+            ask=float(ask),
+            point=float(getattr(self, "point", 0.0) or 0.0),
+            step=float(getattr(self, "step", 0.0) or 0.0),
+            atr=atr,
+        )
 
     def _calc_exposure(self, my_positions, my_orders):
         """璁＄畻褰撳墠鎸佷粨鍜屾寕鍗曠殑鏁炲彛鎯呭喌銆?
@@ -392,49 +381,14 @@ class GridOrdersMixin:
         return long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol
 
     def _calc_predicted_net_exposure(self, my_positions, my_orders, *, tick, atr: float | None = None) -> float:
-        """Predicted net exposure with probabilistic pending-order contribution."""
-        net_vol = 0.0
-        for p in my_positions:
-            if p.type == mt5.POSITION_TYPE_BUY:
-                net_vol += float(p.volume)
-            elif p.type == mt5.POSITION_TYPE_SELL:
-                net_vol -= float(p.volume)
-
-        if tick is None or tick.bid <= 0 or tick.ask <= 0 or tick.ask < tick.bid:
-            # Fallback to deterministic pending exposure when tick is unavailable.
-            for o in my_orders:
-                vol = float(getattr(o, "volume_current", o.volume_initial) or 0.0)
-                if o.type == mt5.ORDER_TYPE_BUY_LIMIT:
-                    net_vol += vol
-                elif o.type == mt5.ORDER_TYPE_SELL_LIMIT:
-                    net_vol -= vol
-            return net_vol
-
-        bid = float(tick.bid)
-        ask = float(tick.ask)
-        for o in my_orders:
-            vol = float(getattr(o, "volume_current", o.volume_initial) or 0.0)
-            if vol <= 0:
-                continue
-            if o.type == mt5.ORDER_TYPE_BUY_LIMIT:
-                p_fill = self._estimate_fill_probability(
-                    side="buy",
-                    price=float(o.price_open),
-                    bid=bid,
-                    ask=ask,
-                    atr=atr,
-                )
-                net_vol += vol * p_fill
-            elif o.type == mt5.ORDER_TYPE_SELL_LIMIT:
-                p_fill = self._estimate_fill_probability(
-                    side="sell",
-                    price=float(o.price_open),
-                    bid=bid,
-                    ask=ask,
-                    atr=atr,
-                )
-                net_vol -= vol * p_fill
-        return net_vol
+        return calc_predicted_net_exposure(
+            positions=my_positions,
+            orders=my_orders,
+            tick=tick,
+            point=float(getattr(self, "point", 0.0) or 0.0),
+            step=float(getattr(self, "step", 0.0) or 0.0),
+            atr=atr,
+        )
 
     def _allow_side(self, side, long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol,
                      *, long_pos_count: int = 0, short_pos_count: int = 0, net_lot: float | None = None):

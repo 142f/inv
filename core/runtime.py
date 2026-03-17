@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Protocol, Set, Tuple
 import numpy as np
 import MetaTrader5 as mt5
 
+from core.app.strategy_runtime import StrategyRuntime
 from core.logger import Logger
 
 # ===========================================================================
@@ -39,6 +40,7 @@ class BrokerProtocol(Protocol):
     def symbol_info_tick(self, symbol: str) -> Optional[mt5.Tick]: ...
     def orders_get(self) -> Optional[Tuple[mt5.Order, ...]]: ...
     def positions_get(self) -> Optional[Tuple[mt5.Position, ...]]: ...
+    def order_send(self, request: dict) -> Any: ...
 
 # ===========================================================================
 # 数据馈送（指标缓存）
@@ -190,6 +192,7 @@ class Runner:
         self._datafeed = strategy_manager.datafeed
         queue_flag = str(os.getenv("INV_USE_ACTION_QUEUE", "0")).strip().lower()
         self._use_action_queue = queue_flag in {"1", "true", "yes", "y", "on"}
+        self._strategy_runtime = StrategyRuntime(broker, use_action_queue=self._use_action_queue)
         if self._use_action_queue:
             Logger.log("SYSTEM", "WARN", "INV_USE_ACTION_QUEUE is enabled; queued execution may delay state convergence")
 
@@ -346,9 +349,6 @@ class Runner:
         orders_by_key: Dict[Tuple[int, str], List[Any]],
         positions_by_key: Dict[Tuple[int, str], List[Any]],
     ) -> None:
-        actions = []
-        action_collector = actions if self._use_action_queue else None
-        cycle_failed = False
         try:
             ctx = self._build_strategy_context(
                 strategy,
@@ -357,26 +357,9 @@ class Runner:
                 orders_by_key,
                 positions_by_key,
             )
-
-            # 保留原生 CPython 高速 hasattr 优化，移除多余字典结构
-            if hasattr(strategy, "on_tick"):
-                strategy.on_tick(ctx, action_collector=action_collector)
-            else:
-                strategy.update(
-                    orders_list=ctx.orders,
-                    positions_list=ctx.positions,
-                    tick=ctx.tick,
-                    orders_filtered=True,
-                    positions_filtered=True,
-                    atr=ctx.atr,
-                    action_collector=action_collector,
-                )
+            self._strategy_runtime.execute(strategy, ctx)
         except Exception as exc:
-            cycle_failed = True
             Logger.log(strategy.symbol, "异常", f"策略执行生命周期内发生崩溃 (magic={strategy.magic}): {exc}")
-
-        if self._use_action_queue and (not cycle_failed):
-            self._flush_actions(strategy, actions)
 
     def _build_strategy_context(
         self,
@@ -402,72 +385,5 @@ class Runner:
             positions=positions_by_key.get((magic, strategy.symbol), []),
             atr=atr,
         )
-
-    def _flush_actions(self, strategy: Any, actions: List[Any]) -> None:
-        if not actions:
-            return
-
-        # 快照并清空队列，同时重置 _action_collector 为 None
-        # 防止 _dispatch_request → _append_action_if_queued 将请求重新写入 actions
-        # 列表，导致 for 循环无限追加处理同一张单（死循环挂单检查）
-        pending = list(actions)
-        actions.clear()
-        strategy._action_collector = None
-
-        for request in pending:
-            if not isinstance(request, dict):
-                continue
-
-            action = request.get("action")
-            is_trade_action = action in (mt5.TRADE_ACTION_DEAL, mt5.TRADE_ACTION_PENDING)
-            try:
-                if is_trade_action:
-                    result = strategy._send_with_fillings(request)
-                else:
-                    with self._broker.lock:
-                        result = mt5.order_send(request)
-            except Exception as exc:
-                Logger.log(
-                    strategy.symbol,
-                    "EXCEPTION",
-                    f"flush_actions order_send exception (magic={strategy.magic}): {exc}",
-                )
-                continue
-
-            if result is None:
-                Logger.log(
-                    strategy.symbol,
-                    "错误",
-                    f"order_send 底层返回 None，C-API 交互异常 (magic={strategy.magic})。代码: {mt5.last_error()}",
-                )
-                continue
-
-            if result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-                if is_trade_action and hasattr(strategy, "_handle_order_error"):
-                    try:
-                        strategy._handle_order_error(
-                            result.retcode,
-                            getattr(result, "comment", ""),
-                            request.get("price"),
-                        )
-                    except Exception as exc:
-                        Logger.log(
-                            strategy.symbol,
-                            "EXCEPTION",
-                            f"_handle_order_error failed (magic={strategy.magic}): {exc}",
-                        )
-                else:
-                    Logger.log(
-                        strategy.symbol,
-                        "拒单",
-                        f"RC: {result.retcode} | {getattr(result, 'comment', '无附言')} | magic={strategy.magic}",
-                    )
-                continue
-
-            if is_trade_action and hasattr(strategy, "_on_order_submit_success"):
-                try:
-                    strategy._on_order_submit_success()
-                except Exception:
-                    pass
 
 __all__ = ["DataFeed", "Runner"]

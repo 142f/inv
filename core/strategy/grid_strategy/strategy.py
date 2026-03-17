@@ -6,6 +6,7 @@ import time
 import MetaTrader5 as mt5
 
 from core.logger import Logger
+from core.strategy.grid import InventoryWindowPolicy, RelativeSpreadFusePolicy, UtilityOrderSelector
 from core.strategy.components import GridCalculator, RiskManager
 
 TIMEFRAME_MAP = {
@@ -298,6 +299,9 @@ class GridStrategy(
         self._action_collector = None
         self.grid_calculator = GridCalculator(self._normalize_price)
         self.risk_manager = RiskManager()
+        self._spread_fuse_policy = RelativeSpreadFusePolicy()
+        self._inventory_window_policy = InventoryWindowPolicy()
+        self._order_selector = UtilityOrderSelector()
 
     def _init_anchor_and_caps(
         self,
