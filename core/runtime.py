@@ -264,20 +264,37 @@ class Runner:
         interval: float,
         now: float,
     ) -> bool:
+        def _fmt_num(value: Any, width: int = 10) -> str:
+            try:
+                return f"{float(value):>{width}.2f}"
+            except (TypeError, ValueError):
+                return f"{'N/A':>{width}}"
+
+        margin_level_raw = getattr(account_info, "margin_level", None)
+        try:
+            margin_level = float(margin_level_raw)
+        except (TypeError, ValueError):
+            margin_level = None
+
         if now - loop_state.last_account_log_time > ACCOUNT_LOG_INTERVAL_SECONDS:
+            margin_level_display = (
+                f"{margin_level:>9.2f}%" if margin_level is not None else f"{'N/A':>9}"
+            )
             Logger.log(
                 "系统",
                 "资金播报",
                 (
-                    f"余额: {account_info.balance:>10.2f} | 净值: {account_info.equity:>10.2f} | "
-                    f"预付款: {account_info.margin:>10.2f} | 比例: {account_info.margin_level:>9.2f}%"
+                    f"余额: {_fmt_num(getattr(account_info, 'balance', None))} | "
+                    f"净值: {_fmt_num(getattr(account_info, 'equity', None))} | "
+                    f"预付款: {_fmt_num(getattr(account_info, 'margin', None))} | "
+                    f"比例: {margin_level_display}"
                 ),
             )
             loop_state.last_account_log_time = now
 
-        if 0 < account_info.margin_level < 200:
+        if margin_level is not None and 0 < margin_level < 200:
             if not loop_state.halted:
-                Logger.log("系统", "风控拦截", f"保证金比例极危 ({account_info.margin_level:>6.2f}%)，全策略暂停运行")
+                Logger.log("系统", "风控拦截", f"保证金比例极危 ({margin_level:>6.2f}%)，全策略暂停运行")
                 loop_state.halted = True
             time.sleep(max(RETRY_SLEEP_SECONDS, interval))
             return True
@@ -402,11 +419,20 @@ class Runner:
                 continue
 
             action = request.get("action")
-            if action in (mt5.TRADE_ACTION_DEAL, mt5.TRADE_ACTION_PENDING):
-                result = strategy._send_with_fillings(request) 
-            else:
-                with self._broker.lock:
-                    result = mt5.order_send(request)
+            is_trade_action = action in (mt5.TRADE_ACTION_DEAL, mt5.TRADE_ACTION_PENDING)
+            try:
+                if is_trade_action:
+                    result = strategy._send_with_fillings(request)
+                else:
+                    with self._broker.lock:
+                        result = mt5.order_send(request)
+            except Exception as exc:
+                Logger.log(
+                    strategy.symbol,
+                    "EXCEPTION",
+                    f"flush_actions order_send exception (magic={strategy.magic}): {exc}",
+                )
+                continue
 
             if result is None:
                 Logger.log(
@@ -417,10 +443,31 @@ class Runner:
                 continue
 
             if result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
-                Logger.log(
-                    strategy.symbol,
-                    "拒单",
-                    f"RC: {result.retcode} | {getattr(result, 'comment', '无附言')} | magic={strategy.magic}",
-                )
+                if is_trade_action and hasattr(strategy, "_handle_order_error"):
+                    try:
+                        strategy._handle_order_error(
+                            result.retcode,
+                            getattr(result, "comment", ""),
+                            request.get("price"),
+                        )
+                    except Exception as exc:
+                        Logger.log(
+                            strategy.symbol,
+                            "EXCEPTION",
+                            f"_handle_order_error failed (magic={strategy.magic}): {exc}",
+                        )
+                else:
+                    Logger.log(
+                        strategy.symbol,
+                        "拒单",
+                        f"RC: {result.retcode} | {getattr(result, 'comment', '无附言')} | magic={strategy.magic}",
+                    )
+                continue
+
+            if is_trade_action and hasattr(strategy, "_on_order_submit_success"):
+                try:
+                    strategy._on_order_submit_success()
+                except Exception:
+                    pass
 
 __all__ = ["DataFeed", "Runner"]

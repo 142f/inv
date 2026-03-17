@@ -17,6 +17,9 @@ class ConfigValidationError(Exception):
 class ConfigLoader:
     REQUIRED_FIELDS = ["symbol", "step", "tp_dist", "lot", "magic"]
     ALLOWED_MODES = {"neutral", "long", "short"}
+    ALLOWED_OUT_OF_RANGE_ACTIONS = {"freeze", "stop"}
+    ALLOWED_ATR_MODES = {"wilder", "ema", "sma"}
+    ALLOWED_TIMEFRAMES = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
 
     def __init__(self, config_path: Path | None = None):
         project_root = Path(__file__).resolve().parents[1]
@@ -96,12 +99,39 @@ class ConfigLoader:
                 raise ConfigValidationError(f"Invalid mode: {mode}")
             cfg["mode"] = normalized_mode
 
+        out_of_range_action = cfg.get("out_of_range_action")
+        if out_of_range_action is not None:
+            normalized_action = str(out_of_range_action).strip().lower()
+            if normalized_action not in self.ALLOWED_OUT_OF_RANGE_ACTIONS:
+                raise ConfigValidationError(f"Invalid out_of_range_action: {out_of_range_action}")
+            cfg["out_of_range_action"] = normalized_action
+
+        atr_mode = cfg.get("atr_mode")
+        if atr_mode is not None:
+            normalized_atr_mode = str(atr_mode).strip().lower()
+            if normalized_atr_mode not in self.ALLOWED_ATR_MODES:
+                raise ConfigValidationError(f"Invalid atr_mode: {atr_mode}")
+            cfg["atr_mode"] = normalized_atr_mode
+
+        for tf_key in ("atr_timeframe", "adaptive_timeframe"):
+            if tf_key in cfg and cfg[tf_key] is not None:
+                tf = str(cfg[tf_key]).strip().upper()
+                if tf not in self.ALLOWED_TIMEFRAMES:
+                    raise ConfigValidationError(f"Invalid {tf_key}: {cfg[tf_key]}")
+                cfg[tf_key] = tf
+
         self._ensure_positive(cfg, "step")
         self._ensure_positive(cfg, "tp_dist")
         self._ensure_positive(cfg, "lot")
         # window 是可选字段，有默认值，只在配置了的情况下验证
         if "window" in cfg:
             self._ensure_positive(cfg, "window", allow_zero=False)
+        if "buy_window" in cfg:
+            self._ensure_positive(cfg, "buy_window", allow_zero=False)
+        if "sell_window" in cfg:
+            self._ensure_positive(cfg, "sell_window", allow_zero=False)
+        if "max_new_orders_per_update" in cfg:
+            self._ensure_positive(cfg, "max_new_orders_per_update", allow_zero=False)
 
         self._ensure_positive(cfg, "atr_period")
         self._ensure_positive(cfg, "atr_factor")
@@ -121,6 +151,7 @@ class ConfigLoader:
 
         self._ensure_non_negative(cfg, "atr_update_seconds")
         self._ensure_non_negative(cfg, "atr_change_threshold")
+        self._ensure_non_negative(cfg, "recenter_steps")
         self._ensure_non_negative(cfg, "recenter_cooldown")
         self._ensure_non_negative(cfg, "extreme_cooldown")
         self._ensure_non_negative(cfg, "max_spread_points")

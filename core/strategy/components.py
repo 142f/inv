@@ -25,12 +25,9 @@ class GridCalculator:
         buy_window: int,
         sell_window: int,
         mode: str,
-        recenter_steps: int,
         min_dist: Optional[float] = None,
         blocked_k: Optional[Set[int]] = None,
     ) -> Tuple[List[float], List[float]]:
-        _ = recenter_steps
-
         target_buys: List[float] = []
         target_sells: List[float] = []
 

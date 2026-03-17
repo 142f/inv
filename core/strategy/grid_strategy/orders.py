@@ -160,6 +160,7 @@ class GridOrdersMixin:
                         Logger.log(self.symbol, "ERROR", f"order_send returned None after requote. Error: {last_error}")
                         return None
                     if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
+                        self._on_order_submit_success()
                         _pw = max(12, self.digits + 9)
                         _ac = (self.step / self.base_step) if (self.use_atr and self.base_step) else 1.0
                         _sl = f"{sl:>{_pw}.{self.digits}f}" if sl is not None else f"{'--':>{_pw}}"
@@ -173,6 +174,7 @@ class GridOrdersMixin:
                 self._handle_order_error(result.retcode, getattr(result, "comment", ""), price)
                 return None
 
+            self._on_order_submit_success()
             _pw = max(12, self.digits + 9)
             _ac = (self.step / self.base_step) if (self.use_atr and self.base_step) else 1.0
             _sl = f"{sl:>{_pw}.{self.digits}f}" if sl is not None else f"{'--':>{_pw}}"
@@ -194,30 +196,62 @@ class GridOrdersMixin:
     def _place_sell_order(self, price):
         return self._place_limit_order("sell", price)
 
+    def _on_order_submit_success(self):
+        self._transient_reject_streak = 0
+
+    def _transient_reject_backoff(self):
+        streak = int(getattr(self, "_transient_reject_streak", 0) or 0) + 1
+        self._transient_reject_streak = streak
+        backoff_seconds = min(30.0, 0.5 * (2 ** min(streak, 6)))
+        self.pause_until = max(self.pause_until, time.time() + backoff_seconds)
+        return streak, backoff_seconds
+
     def _handle_order_error(self, retcode, comment, price):
-        """缁熶竴澶勭悊璁㈠崟閿欒"""
-        if retcode == 10018: # MARKET_CLOSED
-            Logger.log(self.symbol, "SLEEP", "甯傚満浼戝競锛屾殏鍋滆繍琛?5 鍒嗛挓")
+        """Centralized trade retcode handler with transient backoff."""
+        try:
+            price_text = f"{float(price):.{self.digits}f}"
+        except (TypeError, ValueError):
+            price_text = "--"
+
+        if retcode == 10018:  # MARKET_CLOSED
+            Logger.log(self.symbol, "SLEEP", "Market closed; pause 300s")
             self.pause_until = time.time() + 300
-        elif retcode == 10017: # TRADE_DISABLED
-            Logger.log(self.symbol, 'WARN', 'Trade disabled. Check terminal/account/symbol permissions.')
+            self._transient_reject_streak = 0
+        elif retcode == 10017:  # TRADE_DISABLED
+            Logger.log(self.symbol, "WARN", "Trade disabled. Check terminal/account/symbol permissions.")
             self.pause_until = time.time() + 60
-        elif retcode == 10027: # CLIENT_DISABLES_AT
+            self._transient_reject_streak = 0
+        elif retcode == 10027:  # CLIENT_DISABLES_AT
             Logger.log(self.symbol, "CRITICAL", "MT5 terminal Algo Trading is disabled; strategy stopped")
-            self.enabled = False # 蹇呴』鍋滄锛屽惁鍒欎細姝诲惊鐜?
-        elif retcode == 10004: # REQUOTE
+            self.enabled = False
+            self._transient_reject_streak = 0
+        elif retcode == 10004:  # REQUOTE
             Logger.log(self.symbol, "WARN", "Requote received; retry later")
             self.pause_until = time.time() + 1
-        elif retcode == 10013: # INVALID_REQUEST
-            Logger.log(self.symbol, "ERROR", "鏃犳晥璇锋眰鍙傛暟")
-            self.enabled = False # 鑷村懡閿欒锛屽仠姝㈢瓥鐣?
-        elif retcode == 10014: # INVALID_VOLUME
-            Logger.log(self.symbol, "ERROR", "鏃犳晥鎵嬫暟")
+            self._transient_reject_streak = 0
+        elif retcode in (10006, 10024):  # REJECT / TOO_MANY_REQUESTS
+            streak, backoff_seconds = self._transient_reject_backoff()
+            Logger.log(
+                self.symbol,
+                "WARN",
+                (
+                    f"RetCode={retcode} | Price={price_text} | "
+                    f"Reason: {comment or 'request rejected'} | "
+                    f"backoff={backoff_seconds:.1f}s streak={streak}"
+                ),
+            )
+        elif retcode == 10013:  # INVALID_REQUEST
+            Logger.log(self.symbol, "ERROR", "Invalid trade request; strategy disabled")
             self.enabled = False
+            self._transient_reject_streak = 0
+        elif retcode == 10014:  # INVALID_VOLUME
+            Logger.log(self.symbol, "ERROR", "Invalid volume; strategy disabled")
+            self.enabled = False
+            self._transient_reject_streak = 0
         else:
-            Logger.log(self.symbol, "ORDER_FAIL", f"RetCode={retcode} | Price={price:.{self.digits}f} | Reason: {comment}")
-            # 閫氱敤閿欒鏆傚仠 5 绉掞紝闃叉鍒峰睆
+            Logger.log(self.symbol, "ORDER_FAIL", f"RetCode={retcode} | Price={price_text} | Reason: {comment}")
             self.pause_until = time.time() + 5
+            self._transient_reject_streak = 0
 
     def _get_orders_to_keep(self, my_orders):
         buy_orders = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT]
@@ -239,30 +273,28 @@ class GridOrdersMixin:
         return buy_to_keep, sell_to_keep
 
     def clear_old_orders(self, force_all: bool = False):
-        """娓呯悊鏃х綉鏍兼寕鍗曘€?
-        - enabled=False 鏃讹細鎾ら攢鍏ㄩ儴鍚?magic 鎸傚崟锛?涓獥鍙ｅ崟鍏ㄩ儴鎾ら攢锛?
-        - enabled=True  鏃讹細淇濈暀浠锋牸鏈€杩戠殑 window 鏁伴噺涓鍗曪紝鍒犻櫎澶氫綑閮ㄥ垎
+        """Clear stale pending orders for this strategy.
+
+        force_all=True or strategy disabled: remove all strategy-owned pending orders.
+        Otherwise keep only the configured window (`buy_window`/`sell_window`).
         """
         orders = self._mt5_call(mt5.orders_get, symbol=self.symbol)
         my_orders = [o for o in orders if o.magic == self.magic] if orders else []
 
         if not my_orders:
-            Logger.log(self.symbol, "CLEANUP", f"Magic={self.magic:04d} | 鏃犲巻鍙叉寕鍗曪紝璺宠繃娓呯悊")
+            Logger.log(self.symbol, "CLEANUP", f"Magic={self.magic:04d} | no pending orders")
             return
 
-        # enabled=False锛氬叏閮ㄦ挙閿€锛屾棤闇€ tick 淇℃伅
         if force_all or (not self.enabled):
             buy_to_keep, sell_to_keep = [], []
         else:
             buy_to_keep, sell_to_keep = self._get_orders_to_keep(my_orders)
 
-        # [淇 L-08] 鏀圭敤 ticket 闆嗗悎鍋?O(1) 鏌ユ壘锛岄伩鍏嶄緷璧栧璞¤韩浠芥瘮杈冿紙鍙兘璇垽锛?
         buy_keep_tickets = {o.ticket for o in buy_to_keep}
         sell_keep_tickets = {o.ticket for o in sell_to_keep}
         buy_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_BUY_LIMIT and o.ticket not in buy_keep_tickets]
         sell_to_remove = [o for o in my_orders if o.type == mt5.ORDER_TYPE_SELL_LIMIT and o.ticket not in sell_keep_tickets]
 
-        # 鍒犻櫎瓒呭嚭绐楀彛鐨勮鍗曪紙disabled 鏃跺嵆涓哄叏閮級
         removed_buy = 0
         removed_sell = 0
         failed_remove = 0
@@ -275,8 +307,8 @@ class GridOrdersMixin:
             if getattr(res, "queued", False):
                 queued_remove += 1
                 continue
-            if res.retcode == 10018: # MARKET_CLOSED
-                Logger.log(self.symbol, "WARN", "甯傚満浼戝競锛屾棤娉曟挙鍗曪紝鏆傚仠杩愯 5 鍒嗛挓")
+            if res.retcode == 10018:  # MARKET_CLOSED
+                Logger.log(self.symbol, "WARN", "Market closed while removing pending orders; pause 300s")
                 self.pause_until = time.time() + 300
                 return
             if res.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):

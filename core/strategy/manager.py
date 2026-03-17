@@ -344,7 +344,8 @@ class StrategyManager:
 
         if not configs:  # 自动涵盖了 configs is None 和 len(configs) == 0
             Logger.log("系统", "警告", f"配置文件为空或未加载到有效策略: {self.config_loader.config_path}")
-            return None
+            # 配置已变更但无有效策略：视为“下线全部策略”
+            return []
 
         return configs
 

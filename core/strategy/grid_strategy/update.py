@@ -188,6 +188,30 @@ class GridUpdateMixin:
         if self.anchor is None:
             self.anchor = mid_price if self.adaptive_enabled else self.min_price
 
+        # 运行时锚点平移：价格偏离超过 recenter_steps*step 且冷却结束后重置 anchor。
+        if self.anchor is not None and self.step > 0:
+            recenter_steps = int(getattr(self, "recenter_steps", 0) or 0)
+            recenter_cooldown = float(getattr(self, "recenter_cooldown", 0.0) or 0.0)
+            if recenter_steps > 0:
+                drift = abs(mid_price - self.anchor)
+                trigger = recenter_steps * self.step
+                last_recenter_time = float(getattr(self, "_last_recenter_time", 0.0) or 0.0)
+                if drift >= trigger and (now - last_recenter_time) >= recenter_cooldown:
+                    old_anchor = self.anchor
+                    self.anchor = mid_price
+                    self._last_recenter_time = now
+                    Logger.log(
+                        self.symbol,
+                        "RECENTER",
+                        (
+                            f"magic={self.magic} | "
+                            f"{old_anchor:.{self.digits}f} -> {self.anchor:.{self.digits}f} | "
+                            f"drift={drift:.{self.digits}f} trigger={trigger:.{self.digits}f}"
+                        ),
+                    )
+                    # 重置历史挂单窗口，避免旧 anchor 的网格残留。
+                    self.clear_old_orders()
+
         # [修复 L-05] neutral 模式下净多头同样可能超出 max_net_vol 上限，
         # 对冲管理器（做空对冲多头）在 neutral/long 两种模式下均适用。
         # short 模式的做多对冲属于镜像逻辑，当前实现不覆盖，在此明确排除。
@@ -222,7 +246,6 @@ class GridUpdateMixin:
             buy_window=self.buy_window,
             sell_window=self.sell_window,
             mode=self.mode,
-            recenter_steps=self.recenter_steps,
             min_dist=min_dist,
             blocked_k=pos_k_set,
         )
@@ -231,7 +254,7 @@ class GridUpdateMixin:
             # [P-09] 复用入口处已预计算的 exposure，无需重复调用 _calc_exposure
             liq_buffer = None
             try:
-                account = mt5.account_info()
+                account = self._mt5_call(mt5.account_info)
                 if account:
                     equity = float(getattr(account, "equity", 0.0) or 0.0)
                     margin = float(getattr(account, "margin", 0.0) or 0.0)

@@ -63,7 +63,8 @@ class GridAdaptiveMixin:
         self.tp_dist = _clamp_and_apply(self.base_tp_dist, self.tp_dist)
 
     def _maybe_adapt_params(self):
-        if not self.adaptive_enabled or not self.use_atr:
+        # adaptive 模块独立于 use_atr 开关；仅由 adaptive_enabled 控制。
+        if not self.adaptive_enabled:
             return
 
         lookback = max(50, int(self.adaptive_lookback))
