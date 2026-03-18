@@ -20,6 +20,7 @@ class ConfigLoader:
     ALLOWED_OUT_OF_RANGE_ACTIONS = {"freeze", "stop"}
     ALLOWED_ATR_MODES = {"wilder", "ema", "sma"}
     ALLOWED_TIMEFRAMES = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
+    BOOL_FIELDS = ("enabled", "use_atr", "adaptive_enabled", "hedge_enabled", "auto_trim")
 
     def __init__(self, config_path: Path | None = None):
         project_root = Path(__file__).resolve().parents[1]
@@ -102,6 +103,7 @@ class ConfigLoader:
             raise ConfigValidationError(f"Duplicate magic: {magic}")
         seen_magic.add(magic)
         cfg["magic"] = magic
+        self._normalize_bool_fields(cfg)
 
         mode = cfg.get("mode")
         if mode is not None:
@@ -205,6 +207,30 @@ class ConfigLoader:
         if magic <= 0:
             raise ConfigValidationError(f"Field magic must be greater than 0: {value}")
         return magic
+
+    @classmethod
+    def _normalize_bool_fields(cls, cfg: dict) -> None:
+        for key in cls.BOOL_FIELDS:
+            if key not in cfg:
+                continue
+            cfg[key] = cls._parse_bool(cfg[key], key)
+
+    @staticmethod
+    def _parse_bool(value, key: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            if float(value) in (0.0, 1.0):
+                return bool(int(value))
+            raise ConfigValidationError(f"Field {key} must be boolean-like (0/1/true/false), got: {value}")
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "y", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "n", "off", ""}:
+                return False
+            raise ConfigValidationError(f"Field {key} has invalid boolean value: {value!r}")
+        raise ConfigValidationError(f"Field {key} has unsupported boolean type: {type(value).__name__}")
 
     def _ensure_non_negative(self, cfg: dict, key: str):
         if key not in cfg:

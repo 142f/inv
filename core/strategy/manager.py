@@ -47,6 +47,8 @@ def _coerce_bool(value: Any) -> bool:
             return True
         if normalized in {"0", "false", "no", "n", "off", ""}:
             return False
+        # Fail-safe: unknown non-empty strings should not silently enable features.
+        return False
     return bool(value)
 
 
@@ -134,7 +136,7 @@ class StrategyUpdater:
     def __init__(self, broker):
         self.broker = broker
 
-    def apply(self, strategy: GridStrategy, cfg: dict):
+    def apply(self, strategy: GridStrategy, cfg: dict) -> bool:
         cfg = normalize_config(cfg)
         unknown_keys = [key for key in cfg.keys() if key not in self._KNOWN_CONFIG_KEYS]
         if unknown_keys:
@@ -154,13 +156,12 @@ class StrategyUpdater:
         new_symbol = cfg.get("symbol", strategy.symbol)
         if strategy.symbol != new_symbol:
             if not self.broker.ensure_symbol(new_symbol):
-                strategy.enabled = False
                 Logger.log(
                     "SYSTEM",
-                    "ERROR",
-                    f"Strategy {strategy.magic} symbol switch failed: {strategy.symbol} -> {new_symbol}",
+                    "WARN",
+                    f"Strategy {strategy.magic} symbol switch deferred: {strategy.symbol} -> {new_symbol} (ensure_symbol failed)",
                 )
-                return
+                return False
             strategy.clear_old_orders(force_all=True)
             cleared_orders = True
             strategy.set_symbol(new_symbol, reset_runtime_state=True)
@@ -204,6 +205,8 @@ class StrategyUpdater:
             f"策略已更新: {strategy.symbol} (Magic: {strategy.magic}, 状态: {strategy.enabled}, "
             f"清理订单: {should_clear_orders})"
         )
+
+        return True
 
     @classmethod
     def _snapshot_order_related_state(cls, strategy: GridStrategy) -> dict:
@@ -311,6 +314,7 @@ _ALLOWED_STRATEGY_KWARGS: FrozenSet[str] = frozenset(
     name for name in inspect.signature(GridStrategy.__init__).parameters if name != "self"
 )
 _PENDING_ADD_RETRY_SECONDS = 10.0
+_PENDING_UPDATE_RETRY_SECONDS = 10.0
 
 def build_strategy(cfg: Dict[str, Any], *, lock: Any = None, datafeed: Any = None) -> GridStrategy:
     normalized = normalize_config(cfg)
@@ -329,6 +333,8 @@ class StrategyManager:
         self.active: Dict[int, GridStrategy] = {}
         self._pending_additions: Dict[int, dict] = {}
         self._pending_retry_at: Dict[int, float] = {}
+        self._pending_updates: Dict[int, dict] = {}
+        self._pending_update_retry_at: Dict[int, float] = {}
         self._updater = StrategyUpdater(broker)
         self.datafeed = datafeed or DataFeed(broker)
 
@@ -339,6 +345,7 @@ class StrategyManager:
             self._remove_inactive_strategies(new_magics)
 
         self._retry_pending_additions()
+        self._retry_pending_updates()
 
     def _load_changed_configs(self) -> list[dict] | None:
         """【修改点】重构配置判空逻辑，合并冗余的 None 判断结构。"""
@@ -378,6 +385,7 @@ class StrategyManager:
             new_magics.add(magic)
             self._upsert_strategy(magic, cfg)
         self._prune_pending_additions(new_magics)
+        self._prune_pending_updates(new_magics)
         return new_magics
 
     def _upsert_strategy(self, magic: int, cfg: dict):
@@ -386,7 +394,11 @@ class StrategyManager:
             self._add_strategy(magic, cfg)
             return
         self._drop_pending_addition(magic)
-        self._updater.apply(strategy, cfg)
+        applied = self._updater.apply(strategy, cfg)
+        if applied:
+            self._drop_pending_update(magic)
+        else:
+            self._queue_pending_update(magic, cfg)
 
     def _remove_inactive_strategies(self, new_magics: set[int]):
         # Tuple 包裹是为了防止在迭代字典过程中删除键（RuntimeError）
@@ -412,6 +424,7 @@ class StrategyManager:
         strategy = build_strategy(normalized_cfg, lock=self.broker.lock, datafeed=self.datafeed)
         self.active[magic] = strategy
         self._drop_pending_addition(magic)
+        self._drop_pending_update(magic)
         strategy.clear_old_orders(force_all=True)
         return True
 
@@ -419,8 +432,10 @@ class StrategyManager:
         strategy = self.active.pop(magic, None)
         if not strategy:
             self._drop_pending_addition(magic)
+            self._drop_pending_update(magic)
             return
         self._drop_pending_addition(magic)
+        self._drop_pending_update(magic)
         Logger.log("系统", "移除", f"卸载并清理策略 {strategy.symbol} (Magic: {magic})")
         strategy.clear_old_orders(force_all=True)
 
@@ -448,3 +463,37 @@ class StrategyManager:
                 continue
 
             self._add_strategy(magic, cfg, from_retry=True)
+
+    def _drop_pending_update(self, magic: int) -> None:
+        self._pending_updates.pop(magic, None)
+        self._pending_update_retry_at.pop(magic, None)
+
+    def _queue_pending_update(self, magic: int, cfg: dict) -> None:
+        self._pending_updates[magic] = dict(cfg)
+        self._pending_update_retry_at[magic] = time.monotonic() + _PENDING_UPDATE_RETRY_SECONDS
+
+    def _prune_pending_updates(self, valid_magics: set[int]) -> None:
+        for magic in tuple(self._pending_updates):
+            if magic not in valid_magics:
+                self._drop_pending_update(magic)
+
+    def _retry_pending_updates(self) -> None:
+        if not self._pending_updates:
+            return
+
+        now = time.monotonic()
+        for magic, cfg in tuple(self._pending_updates.items()):
+            strategy = self.active.get(magic)
+            if strategy is None:
+                self._drop_pending_update(magic)
+                continue
+
+            retry_at = float(self._pending_update_retry_at.get(magic, 0.0) or 0.0)
+            if now < retry_at:
+                continue
+
+            applied = self._updater.apply(strategy, cfg)
+            if applied:
+                self._drop_pending_update(magic)
+            else:
+                self._pending_update_retry_at[magic] = now + _PENDING_UPDATE_RETRY_SECONDS

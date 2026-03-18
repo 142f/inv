@@ -527,13 +527,23 @@ class GridUpdateMixin:
                 if o.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT):
                     op = self._normalize_price(o.price_open)
                     is_buy = (o.type == mt5.ORDER_TYPE_BUY_LIMIT)
+                    in_keep_window = (is_buy and o in buy_to_keep) or ((not is_buy) and o in sell_to_keep)
+                    in_target = op in target_set
                     
-                    # 优化说明：利用短路求值与卫语句取代原本啰嗦的 pass 分支，直接剔除了 should_remove 变量
-                    if (is_buy and o in buy_to_keep) or (not is_buy and o in sell_to_keep):
+                    # 仅在“窗口内且仍属于本轮目标”时保留。
+                    # 避免旧网格窗口单被保留，同时新网格在邻近价位继续补单导致“相似订单并存”。
+                    if in_keep_window and in_target:
                         continue
                         
-                    if (op not in target_set) or (op < self.min_price) or (op > self.max_price) or \
-                       (is_buy and self.mode == "short") or (not is_buy and self.mode == "long"):
+                    should_remove = (
+                        (not in_keep_window)
+                        or (not in_target)
+                        or (op < self.min_price)
+                        or (op > self.max_price)
+                        or (is_buy and self.mode == "short")
+                        or ((not is_buy) and self.mode == "long")
+                    )
+                    if should_remove:
                        
                         res = self._dispatch_request({"action": mt5.TRADE_ACTION_REMOVE, "order": o.ticket})
                         if (
@@ -592,8 +602,8 @@ class GridUpdateMixin:
         placed_buy = 0
         placed_sell = 0
         skips_stats = {
-            "buy": {"exist": 0, "near": 0, "pos": 0, "cap": 0, "risk": 0},
-            "sell": {"exist": 0, "near": 0, "pos": 0, "cap": 0, "risk": 0},
+            "buy": {"exist": 0, "dupnear": 0, "near": 0, "pos": 0, "cap": 0, "risk": 0},
+            "sell": {"exist": 0, "dupnear": 0, "near": 0, "pos": 0, "cap": 0, "risk": 0},
         }
 
         if not mode_conflict:
@@ -643,6 +653,7 @@ class GridUpdateMixin:
 
                 skips_stats[side] = {
                     "exist": result["skip_exist"],
+                    "dupnear": result["skip_dupnear"],
                     "near": result["skip_near"],
                     "pos": result["skip_pos"],
                     "cap": result["skip_cap"],

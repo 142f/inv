@@ -424,6 +424,16 @@ class GridOrdersMixin:
                 return True
         return False
 
+    @staticmethod
+    def _has_nearby_pending_price(price: float, existing_prices, tolerance: float) -> bool:
+        tol = max(0.0, float(tolerance))
+        if tol <= 0:
+            return False
+        for exist_price in existing_prices:
+            if abs(float(exist_price) - float(price)) <= tol:
+                return True
+        return False
+
     def _place_side_targets(
         self,
         *,
@@ -447,12 +457,17 @@ class GridOrdersMixin:
         placed_count: int,
     ):
         skip_exist = 0
+        skip_dupnear = 0
         skip_near = 0
         skip_pos = 0
         skip_cap = 0
         skip_risk = 0
         placed_side = 0
         effective_lot = self._normalize_volume(self.lot)
+        near_order_tol = max(
+            float(getattr(self, "point", 0.0) or 0.0) * 2.0,
+            float(getattr(self, "step", 0.0) or 0.0) * 0.25,
+        )
 
         for price in targets:
             if placed_count >= self.max_new_orders_per_update:
@@ -460,6 +475,9 @@ class GridOrdersMixin:
                 break
             if price in existing_prices:
                 skip_exist += 1
+                continue
+            if self._has_nearby_pending_price(price, existing_prices, near_order_tol):
+                skip_dupnear += 1
                 continue
             if abs(price - market_price) < min_dist:
                 skip_near += 1
@@ -496,6 +514,7 @@ class GridOrdersMixin:
             if placed:
                 placed_count += 1
                 placed_side += 1
+                existing_prices.add(price)
                 if side == "buy":
                     pending_buy_vol += effective_lot
                     net_vol += effective_lot
@@ -517,6 +536,7 @@ class GridOrdersMixin:
             "net_vol": net_vol,
             "predicted_net_vol": predicted_net_vol,
             "skip_exist": skip_exist,
+            "skip_dupnear": skip_dupnear,
             "skip_near": skip_near,
             "skip_pos": skip_pos,
             "skip_cap": skip_cap,
