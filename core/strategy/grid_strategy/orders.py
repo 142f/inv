@@ -1,4 +1,5 @@
 # Auto-extracted from core/strategy_lib.py during refactor.
+from bisect import bisect_left, insort
 import MetaTrader5 as mt5
 import time
 from core.logger import Logger
@@ -335,15 +336,43 @@ class GridOrdersMixin:
     # Risk / caps helpers
     # ------------------------
     def _estimate_fill_probability(self, *, side: str, price: float, bid: float, ask: float, atr: float | None = None) -> float:
-        return estimate_fill_probability(
-            side=side,
-            price=float(price),
-            bid=float(bid),
-            ask=float(ask),
-            point=float(getattr(self, "point", 0.0) or 0.0),
-            step=float(getattr(self, "step", 0.0) or 0.0),
-            atr=atr,
+        side_norm = str(side).lower().strip()
+        price_v = float(price)
+        bid_v = float(bid)
+        ask_v = float(ask)
+        point_v = float(getattr(self, "point", 0.0) or 0.0)
+        step_v = float(getattr(self, "step", 0.0) or 0.0)
+        atr_v = None if atr is None else float(atr)
+
+        # Per-cycle memoization: rank() and place() often request the same (side, price).
+        cache = getattr(self, "_fill_prob_cache", None)
+        cache_key = None
+        if isinstance(cache, dict):
+            cache_key = (
+                side_norm,
+                round(price_v, 8),
+                round(bid_v, 8),
+                round(ask_v, 8),
+                round(point_v, 10),
+                round(step_v, 10),
+                0.0 if atr_v is None else round(atr_v, 8),
+            )
+            hit = cache.get(cache_key)
+            if hit is not None:
+                return float(hit)
+
+        prob = estimate_fill_probability(
+            side=side_norm,
+            price=price_v,
+            bid=bid_v,
+            ask=ask_v,
+            point=point_v,
+            step=step_v,
+            atr=atr_v,
         )
+        if cache_key is not None:
+            cache[cache_key] = prob
+        return prob
 
     def _calc_exposure(self, my_positions, my_orders):
         """璁＄畻褰撳墠鎸佷粨鍜屾寕鍗曠殑鏁炲彛鎯呭喌銆?
@@ -434,6 +463,19 @@ class GridOrdersMixin:
                 return True
         return False
 
+    @staticmethod
+    def _has_nearby_pending_price_sorted(price: float, sorted_prices: list[float], tolerance: float) -> bool:
+        tol = max(0.0, float(tolerance))
+        if tol <= 0.0 or not sorted_prices:
+            return False
+        p = float(price)
+        idx = bisect_left(sorted_prices, p)
+        if idx < len(sorted_prices) and abs(sorted_prices[idx] - p) <= tol:
+            return True
+        if idx > 0 and abs(sorted_prices[idx - 1] - p) <= tol:
+            return True
+        return False
+
     def _place_side_targets(
         self,
         *,
@@ -468,28 +510,31 @@ class GridOrdersMixin:
             float(getattr(self, "point", 0.0) or 0.0) * 2.0,
             float(getattr(self, "step", 0.0) or 0.0) * 0.25,
         )
+        # Convert once: O(log N) nearby lookup via binary search instead of per-target O(N) scan.
+        existing_prices_sorted = sorted(float(p) for p in existing_prices)
 
         for price in targets:
+            price_norm = self._normalize_price(price)
             if placed_count >= self.max_new_orders_per_update:
                 skip_cap += 1
                 break
-            if price in existing_prices:
+            if price_norm in existing_prices:
                 skip_exist += 1
                 continue
-            if self._has_nearby_pending_price(price, existing_prices, near_order_tol):
+            if self._has_nearby_pending_price_sorted(price_norm, existing_prices_sorted, near_order_tol):
                 skip_dupnear += 1
                 continue
-            if abs(price - market_price) < min_dist:
+            if abs(price_norm - market_price) < min_dist:
                 skip_near += 1
                 continue
 
-            if self._has_duplicate_position_level(price, pos_k_set, existing_positions_prices):
+            if self._has_duplicate_position_level(price_norm, pos_k_set, existing_positions_prices):
                 skip_pos += 1
                 continue
 
             fill_prob = self._estimate_fill_probability(
                 side=side,
-                price=float(price),
+                price=float(price_norm),
                 bid=float(tick.bid),
                 ask=float(tick.ask),
                 atr=atr_for_prob,
@@ -510,11 +555,12 @@ class GridOrdersMixin:
                 skip_risk += 1
                 break
 
-            placed = self._place_buy_order(price) if side == "buy" else self._place_sell_order(price)
+            placed = self._place_buy_order(price_norm) if side == "buy" else self._place_sell_order(price_norm)
             if placed:
                 placed_count += 1
                 placed_side += 1
-                existing_prices.add(price)
+                existing_prices.add(price_norm)
+                insort(existing_prices_sorted, float(price_norm))
                 if side == "buy":
                     pending_buy_vol += effective_lot
                     net_vol += effective_lot

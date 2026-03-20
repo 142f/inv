@@ -181,6 +181,8 @@ class GridUpdateMixin:
         atr_reference = self._resolve_atr_reference(atr_value)
         if self._handle_spread_fuse(tick=tick, now=now, atr_reference=atr_reference):
             return
+        # Per-cycle probability cache shared by ranking and placement.
+        self._fill_prob_cache = {}
 
         mid_price = (tick.bid + tick.ask) / 2
         
