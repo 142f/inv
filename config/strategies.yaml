@@ -33,10 +33,10 @@
 # ===== BTC 空头 =====
 - symbol: "BTCUSDc"            # 交易品种
   magic: 10031                 # 策略唯一ID
-  enabled: true                # 是否启用
+  enabled: false             # 是否启用
   mode: short                  # 多空双开(neutral), 仅做多(long), 仅做空(short)
 
-  lot: 0.01                    # 交易手数
+  lot: 0.02                    # 交易手数
   step: 388                    # 网格间距
   tp_dist: 388                 # 止盈距离
   window: 4                    # 盘口挂单数量 (单边)
@@ -60,17 +60,17 @@
 
   recenter_steps: 5            # 价格偏离多少格后平移 Anchor
   recenter_cooldown: 60        # 平移冷却时间(秒)
-  max_net_vol: 0.3             # 最大净持仓手数 (Neutral 模式风控)
+  max_net_vol: 0.5             # 最大净持仓手数 (Neutral 模式风控)
 
 # ===== XAU 多头（带对冲） =====
 - symbol: "XAUUSDc"            # 交易品种
   magic: 1001                  # 策略唯一ID
-  enabled: false               # 是否启用
+  enabled: false          # 是否启用
   mode: long                   # 多空双开(neutral), 仅做多(long), 仅做空(short)
 
   lot: 0.01                    # 交易手数
-  step: 18                     # 网格间距
-  tp_dist: 18                  # 止盈距离
+  step:   15                # 网格间距
+  tp_dist: 15               # 止盈距离
   sl_dist: 200                 # 止损距离
   window: 4                    # 盘口挂单数量 (单边)
   min_p: 4000.0                # 最小交易价格
@@ -82,7 +82,7 @@
   atr_period: 20               # adaptive 会使用
   atr_factor: 0.9              # adaptive 会使用
   atr_mode: ema                # adaptive 会使用
-  adaptive_enabled: true       # 动态参数开关(仅新K线触发)
+  adaptive_enabled: false       # 动态参数开关(仅新K线触发)
   adaptive_timeframe: "M15"    # 动态参数周期
   adaptive_lookback: 200       # 回看K线数量
   adaptive_quantile_low: 0.30  # 低波动分位
@@ -95,7 +95,7 @@
 
   recenter_steps: 3            # 价格偏离多少格后平移 Anchor
   recenter_cooldown: 30        # 平移冷却时间(秒)
-  max_net_vol: 0.2             # 最大净持仓手数 (Neutral 模式风控)
+  max_net_vol: 0.25             # 最大净持仓手数 (Neutral 模式风控)
 
   hedge_enabled: true          # 是否启用对冲
   hedge_fraction: 0.3333       # 最大对冲占 cap 的比例
@@ -115,13 +115,13 @@
 # ===== XAU 空头（简化版） =====
 - symbol: "XAUUSDc"            # 交易品种
   magic: 10011                 # 策略唯一ID
-  enabled: true                # 是否启用
+  enabled: false      # 是否启用
   mode: short                  # 多空双开(neutral), 仅做多(long), 仅做空(short)
 
-  lot: 0.02                    # 交易手数
-  step: 11                     # 网格间距
-  tp_dist: 13                  # 止盈距离
-  sl_dist: 200                 # 止损距离
+  lot: 0.01                   # 交易手数
+  step: 15                   # 网格间距
+  tp_dist: 15                # 止盈距离
+  sl_dist: 170                # 止损距离
   window: 4                    # 盘口挂单数量 (单边)
   min_p: 4000.0                # 最小交易价格
   max_p: 5999                  # 最大交易价格

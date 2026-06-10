@@ -224,9 +224,13 @@ class GridOrdersMixin:
             self.pause_until = time.time() + 60
             self._transient_reject_streak = 0
         elif retcode == 10027:  # CLIENT_DISABLES_AT
-            Logger.log(self.symbol, "CRITICAL", "MT5 terminal Algo Trading is disabled; strategy stopped")
+            Logger.log(self.symbol, "CRITICAL", "MT5 终端已禁用算法交易，策略停止并清理本策略挂单")
             self.enabled = False
             self._transient_reject_streak = 0
+            try:
+                self.clear_old_orders(force_all=True)
+            except Exception as exc:
+                Logger.log(self.symbol, "ERROR", f"禁用策略后清理挂单失败: {exc}")
         elif retcode == 10004:  # REQUOTE
             Logger.log(self.symbol, "WARN", "Requote received; retry later")
             self.pause_until = time.time() + 1

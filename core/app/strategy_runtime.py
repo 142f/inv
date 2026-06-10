@@ -15,7 +15,7 @@ class StrategyRuntime:
         self._broker = broker
         self._use_action_queue = bool(use_action_queue)
 
-    def execute(self, strategy: StrategyExecutionProtocol, ctx: Any) -> None:
+    def execute(self, strategy: StrategyExecutionProtocol, ctx: Any) -> bool:
         actions: List[Any] = []
         action_collector = actions if self._use_action_queue else None
         cycle_failed = False
@@ -38,6 +38,8 @@ class StrategyRuntime:
 
         if self._use_action_queue and (not cycle_failed):
             self._flush_actions(strategy, actions)
+
+        return not cycle_failed
 
     def _flush_actions(self, strategy: StrategyExecutionProtocol, actions: List[Any]) -> None:
         if not actions:
@@ -102,4 +104,3 @@ class StrategyRuntime:
                     strategy._on_order_submit_success()
                 except Exception:
                     pass
-

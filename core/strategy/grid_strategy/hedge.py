@@ -26,26 +26,60 @@ class GridHedgeMixin:
             return None
         return float(np.quantile(arr, np.clip(q, 0.0, 1.0)))
 
+    def _log_hedge_gate_warning(self, key: str, message: str, *, min_interval: float = 60.0) -> None:
+        now = time.time()
+        attr = f"_last_{key}_warn_time"
+        last = float(getattr(self, attr, 0.0) or 0.0)
+        if now - last >= min_interval:
+            setattr(self, attr, now)
+            Logger.log(self.symbol, "WARN", message)
+
     def _volatility_gate(self, rates):
         lb, win, q = self.hedge_vol_lookback, self.hedge_vol_window, self.hedge_vol_quantile
         r = rates[-lb:] if len(rates) >= lb else rates
         ranges = r["high"] - r["low"]
 
-        if len(ranges) < win + 10:
+        if len(ranges) < max(3, int(win * 0.5)):
+            self._log_hedge_gate_warning(
+                "hedge_vol_gate",
+                f"对冲波动门控数据不足，已阻断对冲: bars={len(ranges)} need>={max(3, int(win * 0.5))}",
+            )
             return False, None, None
 
-        cur = np.mean(ranges[-win:])
+        effective_win = min(win, len(ranges))
+        if len(ranges) < win + 10:
+            self._log_hedge_gate_warning(
+                "hedge_vol_gate_degraded",
+                f"对冲波动门控数据偏少，使用短窗口退化计算: bars={len(ranges)} window={effective_win}",
+            )
+
+        cur = np.mean(ranges[-effective_win:])
         thr = self._quantile(ranges, q)
         return (thr is not None and cur >= thr), float(cur), thr
 
     def _volume_gate(self, rates):
         base, win, mult = self.hedge_vol_base, self.hedge_vol_window, self.hedge_vol_mult
         v = rates["tick_volume"]
-        if len(v) < base + win + 10:
+        min_needed = max(6, int(win * 2))
+        if len(v) < min_needed:
+            self._log_hedge_gate_warning(
+                "hedge_volume_gate",
+                f"对冲成交量门控数据不足，已阻断对冲: bars={len(v)} need>={min_needed}",
+            )
             return False, None, None
 
-        cur = np.mean(v[-win:])
-        basev = np.mean(v[-(base + win):-win])
+        effective_win = min(win, max(1, len(v) // 3))
+        base_slice = v[: -effective_win]
+        if len(v) < base + win + 10:
+            self._log_hedge_gate_warning(
+                "hedge_volume_gate_degraded",
+                f"对冲成交量门控数据偏少，使用可用历史退化计算: bars={len(v)} window={effective_win}",
+            )
+        if len(base_slice) == 0:
+            return False, None, None
+
+        cur = np.mean(v[-effective_win:])
+        basev = np.mean(base_slice[-base:])
 
         if basev <= 0:
             return False, float(cur), float(basev)
@@ -185,6 +219,11 @@ class GridHedgeMixin:
             vol_ok, vol_cur, vol_thr = self._volatility_gate(rates)
             volm_ok, v_cur, v_base = self._volume_gate(rates)
             gate_ok = vol_ok and volm_ok
+        else:
+            self._log_hedge_gate_warning(
+                "hedge_rates_missing",
+                "对冲门控无法获取 M1 行情数据，已阻断对冲",
+            )
 
         tranche = hedge_target / max(1, self.hedge_tranches)
         if tranche <= 0:

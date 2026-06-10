@@ -23,6 +23,10 @@ RETRY_SLEEP_SECONDS = 2.0
 SYNC_INTERVAL_SECONDS = 2.0
 ACCOUNT_LOG_INTERVAL_SECONDS = 300.0
 MAX_CONSECUTIVE_ERRORS = 10
+ACCOUNT_GUARD_HALT_MARGIN_LEVEL = 200.0
+ACCOUNT_GUARD_RESUME_MARGIN_LEVEL = 230.0
+STRATEGY_FAILURE_LIMIT = 3
+STRATEGY_FAILURE_COOLDOWN_SECONDS = 60.0
 
 ATR_MIN_LOOKBACK_MULTIPLIER = 5
 ATR_MIN_LOOKBACK_ABSOLUTE = 50
@@ -179,6 +183,8 @@ class _LoopState:
     last_account_log_time: float = 0.0
     consecutive_errors: int = 0
     halted: bool = False
+    strategy_failures: Dict[Tuple[int, str], int] | None = None
+    strategy_cooldowns: Dict[Tuple[int, str], float] | None = None
 
 # ===========================================================================
 # 调度器引擎
@@ -202,7 +208,11 @@ class Runner:
         started_at = time.monotonic()
 
         self._strategy_manager.sync()
-        loop_state = _LoopState(last_sync_time=time.monotonic())
+        loop_state = _LoopState(
+            last_sync_time=time.monotonic(),
+            strategy_failures={},
+            strategy_cooldowns={},
+        )
 
         for _ in range(cycles):
             now = time.monotonic()
@@ -233,12 +243,16 @@ class Runner:
             ticks_by_symbol = self._fetch_ticks(enabled_strategies)
 
             for strategy in enabled_strategies:
+                if self._is_strategy_in_cooldown(strategy, loop_state, now):
+                    continue
                 self._run_strategy_cycle(
                     strategy,
                     strategy.magic,
                     ticks_by_symbol,
                     orders_by_key,
                     positions_by_key,
+                    loop_state,
+                    now,
                 )
 
             time.sleep(interval)
@@ -295,14 +309,21 @@ class Runner:
             )
             loop_state.last_account_log_time = now
 
-        if margin_level is not None and 0 < margin_level < 200:
+        if loop_state.halted:
+            if margin_level is not None and margin_level >= ACCOUNT_GUARD_RESUME_MARGIN_LEVEL:
+                Logger.log("系统", "STATUS", f"保证金比例恢复 ({margin_level:>6.2f}%)，全策略恢复运行")
+                loop_state.halted = False
+                return False
+            time.sleep(max(RETRY_SLEEP_SECONDS, interval))
+            return True
+
+        if margin_level is not None and 0 < margin_level < ACCOUNT_GUARD_HALT_MARGIN_LEVEL:
             if not loop_state.halted:
                 Logger.log("系统", "风控拦截", f"保证金比例极危 ({margin_level:>6.2f}%)，全策略暂停运行")
                 loop_state.halted = True
             time.sleep(max(RETRY_SLEEP_SECONDS, interval))
             return True
 
-        loop_state.halted = False
         return False
 
     def _sync_if_needed(self, loop_state: _LoopState, now: float) -> None:
@@ -348,7 +369,10 @@ class Runner:
         ticks_by_symbol: Dict[str, Optional[mt5.Tick]],
         orders_by_key: Dict[Tuple[int, str], List[Any]],
         positions_by_key: Dict[Tuple[int, str], List[Any]],
+        loop_state: _LoopState,
+        now: float,
     ) -> None:
+        key = (magic, strategy.symbol)
         try:
             ctx = self._build_strategy_context(
                 strategy,
@@ -357,9 +381,55 @@ class Runner:
                 orders_by_key,
                 positions_by_key,
             )
-            self._strategy_runtime.execute(strategy, ctx)
+            ok = self._strategy_runtime.execute(strategy, ctx)
+            if ok:
+                if loop_state.strategy_failures is not None:
+                    loop_state.strategy_failures.pop(key, None)
+                return
+            self._record_strategy_failure(strategy, loop_state, key, now)
         except Exception as exc:
             Logger.log(strategy.symbol, "异常", f"策略执行生命周期内发生崩溃 (magic={strategy.magic}): {exc}")
+
+            self._record_strategy_failure(strategy, loop_state, key, now)
+
+    def _is_strategy_in_cooldown(self, strategy: Any, loop_state: _LoopState, now: float) -> bool:
+        cooldowns = loop_state.strategy_cooldowns
+        if cooldowns is None:
+            return False
+        key = (strategy.magic, strategy.symbol)
+        until = float(cooldowns.get(key, 0.0) or 0.0)
+        if until <= now:
+            if key in cooldowns:
+                cooldowns.pop(key, None)
+                Logger.log(strategy.symbol, "STATUS", f"策略异常冷却结束，恢复执行 (magic={strategy.magic})")
+            return False
+        return True
+
+    def _record_strategy_failure(
+        self,
+        strategy: Any,
+        loop_state: _LoopState,
+        key: Tuple[int, str],
+        now: float,
+    ) -> None:
+        failures = loop_state.strategy_failures
+        cooldowns = loop_state.strategy_cooldowns
+        if failures is None or cooldowns is None:
+            return
+        count = int(failures.get(key, 0) or 0) + 1
+        failures[key] = count
+        if count < STRATEGY_FAILURE_LIMIT:
+            return
+        cooldowns[key] = now + STRATEGY_FAILURE_COOLDOWN_SECONDS
+        failures[key] = 0
+        Logger.log(
+            strategy.symbol,
+            "WARN",
+            (
+                f"策略连续异常 {STRATEGY_FAILURE_LIMIT} 次，进入冷却 "
+                f"{STRATEGY_FAILURE_COOLDOWN_SECONDS:.0f} 秒 (magic={strategy.magic})"
+            ),
+        )
 
     def _build_strategy_context(
         self,

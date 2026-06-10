@@ -191,6 +191,8 @@ class ConfigLoader:
         if key not in cfg:
             # 可选字段不存在时跳过验证
             return
+        if self._is_empty_optional_value(cfg, key):
+            return
         try:
             value = float(cfg[key])
         except Exception:
@@ -212,6 +214,8 @@ class ConfigLoader:
     def _normalize_bool_fields(cls, cfg: dict) -> None:
         for key in cls.BOOL_FIELDS:
             if key not in cfg:
+                continue
+            if cfg[key] is None or (isinstance(cfg[key], str) and not cfg[key].strip()):
                 continue
             cfg[key] = cls._parse_bool(cfg[key], key)
 
@@ -235,6 +239,8 @@ class ConfigLoader:
     def _ensure_non_negative(self, cfg: dict, key: str):
         if key not in cfg:
             return
+        if self._is_empty_optional_value(cfg, key):
+            return
         try:
             value = float(cfg[key])
         except Exception:
@@ -244,6 +250,8 @@ class ConfigLoader:
 
     def _ensure_between(self, cfg: dict, key: str, *, low: float, high: float, inclusive: bool):
         if key not in cfg:
+            return
+        if self._is_empty_optional_value(cfg, key):
             return
         try:
             value = float(cfg[key])
@@ -255,3 +263,9 @@ class ConfigLoader:
         else:
             if value <= low or value >= high:
                 raise ConfigValidationError(f"Field {key} must be in ({low}, {high})")
+
+    def _is_empty_optional_value(self, cfg: dict, key: str) -> bool:
+        if key in self.REQUIRED_FIELDS:
+            return False
+        value = cfg.get(key)
+        return value is None or (isinstance(value, str) and not value.strip())
