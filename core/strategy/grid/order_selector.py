@@ -6,6 +6,17 @@ from typing import Callable, Iterable, List
 class UtilityOrderSelector:
     """Rank candidate targets by utility (reward - cost - inventory risk)."""
 
+    def __init__(
+        self,
+        *,
+        cost_weight: float = 0.35,
+        distance_weight: float = 0.2,
+        risk_weight: float = 0.7,
+    ) -> None:
+        self.cost_weight = float(cost_weight)
+        self.distance_weight = float(distance_weight)
+        self.risk_weight = float(risk_weight)
+
     def rank(
         self,
         *,
@@ -43,11 +54,10 @@ class UtilityOrderSelector:
             reward = float(tp_dist) * p_fill
             distance = (tick_ask - price) if side_norm == "buy" else (price - tick_bid)
             distance_penalty = max(0.0, float(distance) - float(step) * 0.5)
-            cost_penalty = spread + 0.2 * distance_penalty
-            risk_penalty = float(step) * 0.7 * directional_pressure
-            utility = reward - 0.35 * cost_penalty - risk_penalty
+            cost_penalty = spread + self.distance_weight * distance_penalty
+            risk_penalty = float(step) * self.risk_weight * directional_pressure
+            utility = reward - self.cost_weight * cost_penalty - risk_penalty
             ranked.append((utility, float(price)))
 
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [price for _, price in ranked]
-

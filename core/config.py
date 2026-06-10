@@ -168,6 +168,9 @@ class ConfigLoader:
         self._ensure_non_negative(cfg, "recenter_cooldown")
         self._ensure_non_negative(cfg, "extreme_cooldown")
         self._ensure_non_negative(cfg, "max_spread_points")
+        self._ensure_non_negative(cfg, "utility_cost_weight")
+        self._ensure_non_negative(cfg, "utility_distance_weight")
+        self._ensure_non_negative(cfg, "utility_risk_weight")
 
         self._ensure_between(cfg, "hedge_fraction", low=0.0, high=1.0, inclusive=True)
         self._ensure_between(cfg, "hedge_vol_quantile", low=0.0, high=1.0, inclusive=True)

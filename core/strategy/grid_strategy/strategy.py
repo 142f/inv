@@ -123,6 +123,9 @@ class GridStrategy(
         hedge_vol_mult=3.0,
         be_trigger_steps=1,
         be_buffer_points=20,
+        utility_cost_weight=0.35,
+        utility_distance_weight=0.2,
+        utility_risk_weight=0.7,
     ):
         self.symbol = symbol
 
@@ -167,7 +170,13 @@ class GridStrategy(
             max_step_mult=max_step_mult,
             auto_trim=auto_trim,
         )
-        self._init_runtime_dependencies(lock=lock, datafeed=datafeed)
+        self._init_runtime_dependencies(
+            lock=lock,
+            datafeed=datafeed,
+            utility_cost_weight=utility_cost_weight,
+            utility_distance_weight=utility_distance_weight,
+            utility_risk_weight=utility_risk_weight,
+        )
         self._init_anchor_and_caps(
             anchor=anchor,
             recenter_steps=recenter_steps,
@@ -291,7 +300,15 @@ class GridStrategy(
         self.max_step_mult = max_step_mult
         self.auto_trim = bool(auto_trim)
 
-    def _init_runtime_dependencies(self, *, lock, datafeed):
+    def _init_runtime_dependencies(
+        self,
+        *,
+        lock,
+        datafeed,
+        utility_cost_weight,
+        utility_distance_weight,
+        utility_risk_weight,
+    ):
         self.lock = lock
         self.datafeed = datafeed
         self.bid_orders = {}
@@ -301,7 +318,14 @@ class GridStrategy(
         self.risk_manager = RiskManager()
         self._spread_fuse_policy = RelativeSpreadFusePolicy()
         self._inventory_window_policy = InventoryWindowPolicy()
-        self._order_selector = UtilityOrderSelector()
+        self.utility_cost_weight = float(utility_cost_weight)
+        self.utility_distance_weight = float(utility_distance_weight)
+        self.utility_risk_weight = float(utility_risk_weight)
+        self._order_selector = UtilityOrderSelector(
+            cost_weight=self.utility_cost_weight,
+            distance_weight=self.utility_distance_weight,
+            risk_weight=self.utility_risk_weight,
+        )
 
     def _init_anchor_and_caps(
         self,

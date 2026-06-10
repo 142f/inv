@@ -162,8 +162,20 @@ class GridStateStatsMixin:
             # [修复 L-02]：反序列化增量游标与缓存
             self._last_deal_time = state.get('_last_deal_time', 0.0)
             self._last_deal_ticket = state.get('_last_deal_ticket', 0)
-            self._order_profit = state.get('_order_profit', {})
-            self._order_type = state.get('_order_type', {})
+            self._order_profit = self._restore_ticket_key_dict(state.get('_order_profit', {}))
+            self._order_type = self._restore_ticket_key_dict(state.get('_order_type', {}))
+
+    @staticmethod
+    def _restore_ticket_key_dict(value):
+        if not isinstance(value, dict):
+            return {}
+        restored = {}
+        for key, item in value.items():
+            try:
+                restored[int(key)] = item
+            except (TypeError, ValueError):
+                restored[key] = item
+        return restored
 
     def _deal_net_profit(self, deal) -> float:
         profit = float(getattr(deal, "profit", 0.0) or 0.0)

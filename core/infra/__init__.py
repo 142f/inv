@@ -1,5 +1,4 @@
 from .config_repository import ConfigRepository
-from .state_repository import InMemoryStateRepository
+from .state_repository import FileStateRepository, InMemoryStateRepository
 
-__all__ = ["ConfigRepository", "InMemoryStateRepository"]
-
+__all__ = ["ConfigRepository", "FileStateRepository", "InMemoryStateRepository"]

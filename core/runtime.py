@@ -27,6 +27,7 @@ ACCOUNT_GUARD_HALT_MARGIN_LEVEL = 200.0
 ACCOUNT_GUARD_RESUME_MARGIN_LEVEL = 230.0
 STRATEGY_FAILURE_LIMIT = 3
 STRATEGY_FAILURE_COOLDOWN_SECONDS = 60.0
+STRATEGY_STATE_SAVE_INTERVAL_SECONDS = 30.0
 
 ATR_MIN_LOOKBACK_MULTIPLIER = 5
 ATR_MIN_LOOKBACK_ABSOLUTE = 50
@@ -66,7 +67,7 @@ class DataFeed:
         self._broker = broker
         self._atr_cache: Dict[Tuple[str, int, int, str, float], _AtrState] = {}
         # 恢复：该缓存字典为对外接口 get_rates 服务，策略层重度依赖
-        self._rates_cache: Dict[Tuple[str, int, int], _RatesState] = {}
+        self._rates_cache: Dict[Tuple[str, int], _RatesState] = {}
         self._lock = broker.lock 
 
     def get_atr(
@@ -121,21 +122,24 @@ class DataFeed:
         min_ratio: float = 0.7,
     ) -> np.ndarray | None:
         """获取 K 线数据（缓存优先）。该接口暴露给外部策略对象使用。"""
-        key = (symbol, timeframe, count)
+        key = (symbol, timeframe)
         state = self._rates_cache.setdefault(key, _RatesState())
         now = time.monotonic()
 
-        if state.rates is not None and (now - state.last_time) < cache_seconds:
-            return state.rates
+        if state.rates is not None and len(state.rates) >= count and (now - state.last_time) < cache_seconds:
+            return state.rates[-count:]
 
         rates = self._copy_rates(symbol, timeframe, count)
         min_count = int(count * min_ratio)
         if rates is None or len(rates) < min_count:
-            return state.rates if state.rates is not None else None
+            if state.rates is not None and len(state.rates) >= min_count:
+                return state.rates[-min(count, len(state.rates)):]
+            return None
 
-        state.rates = rates
+        if state.rates is None or len(rates) >= len(state.rates):
+            state.rates = rates
         state.last_time = now
-        return rates
+        return state.rates[-count:]
 
     def _copy_rates(self, symbol: str, timeframe: int, count: int) -> np.ndarray | None:
         with self._lock:
@@ -185,6 +189,7 @@ class _LoopState:
     halted: bool = False
     strategy_failures: Dict[Tuple[int, str], int] | None = None
     strategy_cooldowns: Dict[Tuple[int, str], float] | None = None
+    strategy_state_saved_at: Dict[Tuple[int, str], float] | None = None
 
 # ===========================================================================
 # 调度器引擎
@@ -212,6 +217,7 @@ class Runner:
             last_sync_time=time.monotonic(),
             strategy_failures={},
             strategy_cooldowns={},
+            strategy_state_saved_at={},
         )
 
         for _ in range(cycles):
@@ -254,6 +260,7 @@ class Runner:
                     loop_state,
                     now,
                 )
+                self._persist_strategy_state_if_needed(strategy, loop_state, now)
 
             time.sleep(interval)
 
@@ -430,6 +437,20 @@ class Runner:
                 f"{STRATEGY_FAILURE_COOLDOWN_SECONDS:.0f} 秒 (magic={strategy.magic})"
             ),
         )
+
+    def _persist_strategy_state_if_needed(self, strategy: Any, loop_state: _LoopState, now: float) -> None:
+        saved_at = loop_state.strategy_state_saved_at
+        if saved_at is None:
+            return
+        key = (strategy.magic, strategy.symbol)
+        last = float(saved_at.get(key, 0.0) or 0.0)
+        if now - last < STRATEGY_STATE_SAVE_INTERVAL_SECONDS:
+            return
+        persist = getattr(self._strategy_manager, "persist_strategy_state", None)
+        if persist is None:
+            return
+        persist(strategy)
+        saved_at[key] = now
 
     def _build_strategy_context(
         self,

@@ -8,6 +8,8 @@ from typing import Any, Callable, Dict, FrozenSet
 
 from core.logger import Logger
 from core.runtime import DataFeed
+from core.infra import FileStateRepository
+from core.strategy.grid import UtilityOrderSelector
 from core.strategy.grid_strategy.strategy import GridStrategy
 
 # ── 配置归一化 (Config normalization) ──────────────────────────────────────────
@@ -32,7 +34,8 @@ _FLOAT_KEYS = frozenset({
     "adaptive_lot_max_mult", "adaptive_range_buffer_atr", "recenter_cooldown",
     "max_long_vol", "max_short_vol", "max_net_vol", "max_spread_points",
     "extreme_cooldown", "hedge_fraction", "hedge_cooldown", "max_gross_vol",
-    "hedge_vol_quantile", "hedge_vol_mult",
+    "hedge_vol_quantile", "hedge_vol_mult", "utility_cost_weight",
+    "utility_distance_weight", "utility_risk_weight",
 })
 
 
@@ -111,7 +114,8 @@ class StrategyUpdater:
         "mode", "out_of_range_action", "recenter_steps", "recenter_cooldown",
         "max_long_pos", "max_short_pos", "max_long_vol", "max_short_vol",
         "max_net_vol", "max_spread_points", "extreme_cooldown",
-        "max_new_orders_per_update", "auto_trim",
+        "max_new_orders_per_update", "auto_trim", "utility_cost_weight",
+        "utility_distance_weight", "utility_risk_weight",
     )
 
     _HEDGE_KEYS = (
@@ -173,7 +177,9 @@ class StrategyUpdater:
         
         # 【修改点】_apply_updates 现直接返回是否发生变更，消除二次遍历
         atr_changed = self._apply_updates(strategy, cfg, self._ATR_KEYS)
-        self._apply_updates(strategy, cfg, self._GENERAL_KEYS, coerce_value=self._coerce_general_value)
+        general_changed = self._apply_updates(strategy, cfg, self._GENERAL_KEYS, coerce_value=self._coerce_general_value)
+        if general_changed:
+            self._refresh_order_selector(strategy)
         self._apply_updates(strategy, cfg, self._HEDGE_KEYS)
         adaptive_changed = self._apply_updates(strategy, cfg, self._ADAPTIVE_KEYS)
         atr_disabled_now = was_use_atr and (not bool(getattr(strategy, "use_atr", False)))
@@ -306,6 +312,14 @@ class StrategyUpdater:
             return strategy._normalize_mode(value)
         return value
 
+    @staticmethod
+    def _refresh_order_selector(strategy: GridStrategy) -> None:
+        strategy._order_selector = UtilityOrderSelector(
+            cost_weight=getattr(strategy, "utility_cost_weight", 0.35),
+            distance_weight=getattr(strategy, "utility_distance_weight", 0.2),
+            risk_weight=getattr(strategy, "utility_risk_weight", 0.7),
+        )
+
 
 # ── 策略管理器 (Strategy Manager) ──────────────────────────────────────────────
 
@@ -327,7 +341,7 @@ def build_strategy(cfg: Dict[str, Any], *, lock: Any = None, datafeed: Any = Non
 
 
 class StrategyManager:
-    def __init__(self, broker, config_loader, datafeed: DataFeed | None = None):
+    def __init__(self, broker, config_loader, datafeed: DataFeed | None = None, state_repository=None):
         self.broker = broker
         self.config_loader = config_loader
         self.active: Dict[int, GridStrategy] = {}
@@ -337,6 +351,7 @@ class StrategyManager:
         self._pending_update_retry_at: Dict[int, float] = {}
         self._updater = StrategyUpdater(broker)
         self.datafeed = datafeed or DataFeed(broker)
+        self.state_repository = state_repository or FileStateRepository()
 
     def sync(self):
         configs = self._load_changed_configs()
@@ -396,6 +411,7 @@ class StrategyManager:
         self._drop_pending_addition(magic)
         applied = self._updater.apply(strategy, cfg)
         if applied:
+            self._persist_strategy_state(strategy)
             self._drop_pending_update(magic)
         else:
             self._queue_pending_update(magic, cfg)
@@ -422,10 +438,12 @@ class StrategyManager:
         normalized_cfg = dict(cfg)
         normalized_cfg["magic"] = magic
         strategy = build_strategy(normalized_cfg, lock=self.broker.lock, datafeed=self.datafeed)
+        self._restore_strategy_state(strategy)
         self.active[magic] = strategy
         self._drop_pending_addition(magic)
         self._drop_pending_update(magic)
         strategy.clear_old_orders(force_all=True)
+        self._persist_strategy_state(strategy)
         return True
 
     def _remove_strategy(self, magic: int):
@@ -438,6 +456,8 @@ class StrategyManager:
         self._drop_pending_update(magic)
         Logger.log("系统", "移除", f"卸载并清理策略 {strategy.symbol} (Magic: {magic})")
         strategy.clear_old_orders(force_all=True)
+
+        self.state_repository.delete(self._state_key(magic))
 
     def _drop_pending_addition(self, magic: int) -> None:
         self._pending_additions.pop(magic, None)
@@ -494,6 +514,31 @@ class StrategyManager:
 
             applied = self._updater.apply(strategy, cfg)
             if applied:
+                self._persist_strategy_state(strategy)
                 self._drop_pending_update(magic)
             else:
                 self._pending_update_retry_at[magic] = now + _PENDING_UPDATE_RETRY_SECONDS
+
+    @staticmethod
+    def _state_key(magic: int) -> str:
+        return str(int(magic))
+
+    def _restore_strategy_state(self, strategy: GridStrategy) -> None:
+        state = self.state_repository.get(self._state_key(strategy.magic))
+        if not state:
+            return
+        state.pop("enabled", None)
+        try:
+            strategy.set_state(state)
+            Logger.log(strategy.symbol, "STATUS", f"已恢复策略运行状态 (Magic: {strategy.magic})")
+        except Exception as exc:
+            Logger.log(strategy.symbol, "WARN", f"恢复策略运行状态失败，使用初始状态: {exc}")
+
+    def _persist_strategy_state(self, strategy: GridStrategy) -> None:
+        try:
+            self.state_repository.set(self._state_key(strategy.magic), strategy.get_state())
+        except Exception as exc:
+            Logger.log(strategy.symbol, "WARN", f"保存策略运行状态失败: {exc}")
+
+    def persist_strategy_state(self, strategy: GridStrategy) -> None:
+        self._persist_strategy_state(strategy)
