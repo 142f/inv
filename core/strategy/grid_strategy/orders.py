@@ -154,8 +154,7 @@ class GridOrdersMixin:
                             f"Price {price:.{self.digits}f} too close after requote (<{min_dist:.{self.digits}f}); skip",
                         )
                         return None
-                    Logger.log(self.symbol, "WARN", "Requote锛屽凡纭浠锋牸鍚堟硶锛岄噸璇曚腑...")
-                    time.sleep(0.1)
+                    Logger.log(self.symbol, "WARN", "报价变化，已确认价格合法，立即使用当前快照重试")
                     result = self._send_with_fillings(request)
                     if result is None:
                         last_error = mt5.last_error()

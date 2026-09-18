@@ -98,6 +98,7 @@ class GridStrategy(
         auto_trim=False,
         lock=None,
         datafeed=None,
+        gateway=None,
         anchor=None,
         recenter_steps=3,
         recenter_cooldown=30,
@@ -126,6 +127,7 @@ class GridStrategy(
         utility_cost_weight=0.35,
         utility_distance_weight=0.2,
         utility_risk_weight=0.7,
+        utility_fee_slippage_cost=0.0,
     ):
         self.symbol = symbol
 
@@ -173,9 +175,11 @@ class GridStrategy(
         self._init_runtime_dependencies(
             lock=lock,
             datafeed=datafeed,
+            gateway=gateway,
             utility_cost_weight=utility_cost_weight,
             utility_distance_weight=utility_distance_weight,
             utility_risk_weight=utility_risk_weight,
+            utility_fee_slippage_cost=utility_fee_slippage_cost,
         )
         self._init_anchor_and_caps(
             anchor=anchor,
@@ -305,12 +309,16 @@ class GridStrategy(
         *,
         lock,
         datafeed,
+        gateway,
         utility_cost_weight,
         utility_distance_weight,
         utility_risk_weight,
+        utility_fee_slippage_cost,
     ):
         self.lock = lock
         self.datafeed = datafeed
+        # 兼容层只能通过网关访问券商，避免旧 mixin 绕过执行闸门。
+        self.gateway = gateway
         self.bid_orders = {}
         self.ask_orders = {}
         self._action_collector = None
@@ -321,10 +329,12 @@ class GridStrategy(
         self.utility_cost_weight = float(utility_cost_weight)
         self.utility_distance_weight = float(utility_distance_weight)
         self.utility_risk_weight = float(utility_risk_weight)
+        self.utility_fee_slippage_cost = max(0.0, float(utility_fee_slippage_cost))
         self._order_selector = UtilityOrderSelector(
             cost_weight=self.utility_cost_weight,
             distance_weight=self.utility_distance_weight,
             risk_weight=self.utility_risk_weight,
+            fee_slippage_cost=self.utility_fee_slippage_cost,
         )
 
     def _init_anchor_and_caps(

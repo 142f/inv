@@ -74,7 +74,10 @@ class QueuedResult:
 
 class GridRuntimeMixin:
     def _mt5_call(self, func, *args, **kwargs):
-        """包装 MT5 API 调用，安全接入共享锁。"""
+        """通过兼容网关调用券商；未注入网关时保留旧行为。"""
+        gateway = getattr(self, "gateway", None)
+        if gateway is not None:
+            return gateway.call(getattr(func, "__name__", ""), *args, **kwargs)
         # [优化]：展平执行逻辑，剔除 `_execute` 内部函数的动态分配，降低堆内存碎片与函数调用栈深度。
         if self.lock:
             with self.lock:
@@ -338,6 +341,7 @@ class GridSymbolMixin:
             self.vol_max = info.volume_max
             self.vol_step = info.volume_step
             self.vol_precision = self._precision_from_step(self.vol_step)
+            self.contract_size = float(getattr(info, "trade_contract_size", 1.0) or 1.0)
             self.filling_mode = getattr(info, "filling_mode", None)
             self.initialized = True
         else:
@@ -348,6 +352,7 @@ class GridSymbolMixin:
             self.vol_max = 100
             self.vol_step = 0.01
             self.vol_precision = 2
+            self.contract_size = 1.0
             self.filling_mode = None
             self.initialized = False
             Logger.log(getattr(self, "symbol", "UNKNOWN"), "WARN", "获取品种信息失败，已回退至默认设置。")

@@ -11,9 +11,10 @@ from core.logger import Logger
 
 
 class StrategyRuntime:
-    def __init__(self, broker: ExecutionGatewayProtocol, *, use_action_queue: bool = False):
+    def __init__(self, broker: ExecutionGatewayProtocol, *, use_action_queue: bool = False, execution_service=None):
         self._broker = broker
         self._use_action_queue = bool(use_action_queue)
+        self._execution_service = execution_service
 
     def execute(self, strategy: StrategyExecutionProtocol, ctx: Any) -> bool:
         actions: List[Any] = []
@@ -56,7 +57,12 @@ class StrategyRuntime:
             action = request.get("action")
             is_trade_action = action in (mt5.TRADE_ACTION_DEAL, mt5.TRADE_ACTION_PENDING)
             try:
-                if is_trade_action:
+                if self._execution_service is not None:
+                    result = self._execution_service.submit_native(
+                        request,
+                        strategy_id=f"{strategy.magic}:{strategy.symbol}",
+                    )
+                elif is_trade_action:
                     result = strategy._send_with_fillings(request)
                 else:
                     with self._broker.lock:

@@ -111,6 +111,8 @@ class GridUpdateMixin:
         )
 
     def on_tick(self, ctx, *, action_collector=None):
+        # 复用调度器本轮账户快照，状态日志不再为每个策略重复请求账户信息。
+        self._account_snapshot = getattr(ctx, "account", None)
         return self.update(
             orders_list=ctx.orders,
             positions_list=ctx.positions,
@@ -395,7 +397,9 @@ class GridUpdateMixin:
             # [P-09] 复用入口处已预计算的 exposure，无需重复调用 _calc_exposure
             liq_buffer = None
             try:
-                account = self._mt5_call(mt5.account_info)
+                account = getattr(self, "_account_snapshot", None)
+                if account is None:
+                    account = self._mt5_call(mt5.account_info)
                 if account:
                     equity = float(getattr(account, "equity", 0.0) or 0.0)
                     margin = float(getattr(account, "margin", 0.0) or 0.0)

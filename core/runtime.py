@@ -13,7 +13,10 @@ import numpy as np
 import MetaTrader5 as mt5
 
 from core.app.strategy_runtime import StrategyRuntime
+from core.domain import RiskSettings
+from core.execution import BrokerGateway, ExecutionService
 from core.logger import Logger
+from core.risk import RiskCoordinator, RiskSnapshot
 
 # ===========================================================================
 # 常量定义
@@ -43,9 +46,14 @@ class BrokerProtocol(Protocol):
     def terminal_info(self) -> Optional[mt5.TerminalInfo]: ...
     def copy_rates_from_pos(self, symbol: str, timeframe: int, start_pos: int, count: int) -> Optional[np.ndarray]: ...
     def symbol_info_tick(self, symbol: str) -> Optional[mt5.Tick]: ...
+    def symbol_info(self, symbol: str) -> Any: ...
     def orders_get(self) -> Optional[Tuple[mt5.Order, ...]]: ...
     def positions_get(self) -> Optional[Tuple[mt5.Position, ...]]: ...
     def order_send(self, request: dict) -> Any: ...
+    def order_check(self, request: dict) -> Any: ...
+    def history_deals_get(self, *args: Any, **kwargs: Any) -> Any: ...
+    def copy_rates_range(self, symbol: str, timeframe: Any, start: Any, end: Any) -> Any: ...
+    def copy_ticks_range(self, symbol: str, start: Any, end: Any) -> Any: ...
 
 # ===========================================================================
 # 数据馈送（指标缓存）
@@ -180,6 +188,7 @@ class StrategyContext:
     orders: List[mt5.Order]
     positions: List[mt5.Position]
     atr: float | None = None
+    account: Any = None
 
 @dataclass(slots=True)
 class _LoopState:
@@ -203,7 +212,24 @@ class Runner:
         self._datafeed = strategy_manager.datafeed
         queue_flag = str(os.getenv("INV_USE_ACTION_QUEUE", "0")).strip().lower()
         self._use_action_queue = queue_flag in {"1", "true", "yes", "y", "on"}
-        self._strategy_runtime = StrategyRuntime(broker, use_action_queue=self._use_action_queue)
+        execution_mode = str(os.getenv("INV_EXECUTION_MODE", "paper")).strip().lower()
+        live_enabled = str(os.getenv("INV_LIVE_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "y", "on"}
+        self._execution_service = ExecutionService(
+            broker,
+            mode=execution_mode,
+            live_enabled=live_enabled,
+        )
+        self._execution_gateway = BrokerGateway(broker, self._execution_service)
+        set_gateway = getattr(strategy_manager, "set_execution_gateway", None)
+        if set_gateway is not None:
+            set_gateway(self._execution_gateway)
+        self._risk_coordinator = RiskCoordinator()
+        self._strategy_runtime = StrategyRuntime(
+            broker,
+            use_action_queue=self._use_action_queue,
+            execution_service=self._execution_service,
+        )
+        Logger.log("系统", "执行模式", f"当前执行模式: {self._execution_service.mode.value}")
         if self._use_action_queue:
             Logger.log("SYSTEM", "WARN", "INV_USE_ACTION_QUEUE is enabled; queued execution may delay state convergence")
 
@@ -259,6 +285,7 @@ class Runner:
                     positions_by_key,
                     loop_state,
                     now,
+                    account_info,
                 )
                 self._persist_strategy_state_if_needed(strategy, loop_state, now)
 
@@ -378,6 +405,7 @@ class Runner:
         positions_by_key: Dict[Tuple[int, str], List[Any]],
         loop_state: _LoopState,
         now: float,
+        account_info: Any,
     ) -> None:
         key = (magic, strategy.symbol)
         try:
@@ -387,7 +415,39 @@ class Runner:
                 ticks_by_symbol,
                 orders_by_key,
                 positions_by_key,
+                account_info,
             )
+            risk_settings = getattr(strategy, "risk_settings", RiskSettings())
+            strategy_id = f"{strategy.magic}:{strategy.symbol}"
+            self._execution_service.begin_cycle(strategy_id, risk_settings.max_actions_per_cycle)
+            self._execution_service.set_live_permission(strategy_id, risk_settings.can_trade_live)
+            tick = ctx.tick
+            risk_decision = self._risk_coordinator.assess(
+                RiskSnapshot(
+                    strategy_id=strategy_id,
+                    now=time.time(),
+                    equity=getattr(account_info, "equity", None),
+                    balance=getattr(account_info, "balance", None),
+                    margin_level=getattr(account_info, "margin_level", None),
+                    bid=getattr(tick, "bid", None),
+                    ask=getattr(tick, "ask", None),
+                    point=float(getattr(strategy, "point", 1.0) or 1.0),
+                    contract_size=float(getattr(strategy, "contract_size", 1.0) or 1.0),
+                    tick_time=getattr(tick, "time", None),
+                    positions=ctx.positions,
+                    orders=ctx.orders,
+                ),
+                risk_settings,
+            )
+            if not risk_decision.allowed:
+                Logger.log(
+                    strategy.symbol,
+                    "风控拦截",
+                    f"magic={strategy.magic} | 原因: {'；'.join(risk_decision.reasons)}",
+                )
+                if risk_decision.cancel_pending:
+                    strategy.clear_old_orders(force_all=True)
+                return
             ok = self._strategy_runtime.execute(strategy, ctx)
             if ok:
                 if loop_state.strategy_failures is not None:
@@ -459,6 +519,7 @@ class Runner:
         ticks_by_symbol: Dict[str, Optional[mt5.Tick]],
         orders_by_key: Dict[Tuple[int, str], List[Any]],
         positions_by_key: Dict[Tuple[int, str], List[Any]],
+        account_info: Any,
     ) -> StrategyContext:
         atr = None
         if strategy.use_atr:
@@ -475,6 +536,7 @@ class Runner:
             orders=orders_by_key.get((magic, strategy.symbol), []),
             positions=positions_by_key.get((magic, strategy.symbol), []),
             atr=atr,
+            account=account_info,
         )
 
 __all__ = ["DataFeed", "Runner"]

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import inspect
 import time
 from typing import Any, Callable, Dict, FrozenSet
 
 from core.logger import Logger
 from core.runtime import DataFeed
 from core.infra import FileStateRepository
+from core.domain import StrategySettings
 from core.strategy.grid import UtilityOrderSelector
 from core.strategy.grid_strategy.strategy import GridStrategy
 
@@ -35,7 +35,7 @@ _FLOAT_KEYS = frozenset({
     "max_long_vol", "max_short_vol", "max_net_vol", "max_spread_points",
     "extreme_cooldown", "hedge_fraction", "hedge_cooldown", "max_gross_vol",
     "hedge_vol_quantile", "hedge_vol_mult", "utility_cost_weight",
-    "utility_distance_weight", "utility_risk_weight",
+    "utility_distance_weight", "utility_risk_weight", "utility_fee_slippage_cost",
 })
 
 
@@ -115,7 +115,7 @@ class StrategyUpdater:
         "max_long_pos", "max_short_pos", "max_long_vol", "max_short_vol",
         "max_net_vol", "max_spread_points", "extreme_cooldown",
         "max_new_orders_per_update", "auto_trim", "utility_cost_weight",
-        "utility_distance_weight", "utility_risk_weight",
+        "utility_distance_weight", "utility_risk_weight", "utility_fee_slippage_cost",
     )
 
     _HEDGE_KEYS = (
@@ -134,7 +134,11 @@ class StrategyUpdater:
         "buy_window", "sell_window", "min_p", "max_p",
     )
     _KNOWN_CONFIG_KEYS = frozenset(
-        _DIRECT_KEYS + _ATR_KEYS + _ADAPTIVE_KEYS + _GENERAL_KEYS + _HEDGE_KEYS
+        _DIRECT_KEYS + _ATR_KEYS + _ADAPTIVE_KEYS + _GENERAL_KEYS + _HEDGE_KEYS + (
+            "execution_mode", "live_enabled", "risk", "risk_max_net_vol", "risk_max_gross_vol",
+            "max_notional", "max_open_orders", "max_actions_per_cycle", "min_margin_level",
+            "max_drawdown_ratio", "max_daily_loss", "risk_max_spread_points", "max_tick_age_seconds",
+        )
     )
 
     def __init__(self, broker):
@@ -151,6 +155,8 @@ class StrategyUpdater:
             )
         current_state = strategy.get_state()
         current_state.pop("enabled", None)
+        # 在任何撤单或提交前先切换风险快照，避免热更新窗口沿用旧的实盘许可。
+        self._apply_risk_snapshot(strategy, cfg)
         cleared_orders = False
         was_use_atr = bool(getattr(strategy, "use_atr", False))
 
@@ -318,30 +324,56 @@ class StrategyUpdater:
             cost_weight=getattr(strategy, "utility_cost_weight", 0.35),
             distance_weight=getattr(strategy, "utility_distance_weight", 0.2),
             risk_weight=getattr(strategy, "utility_risk_weight", 0.7),
+            fee_slippage_cost=getattr(strategy, "utility_fee_slippage_cost", 0.0),
         )
 
 
 # ── 策略管理器 (Strategy Manager) ──────────────────────────────────────────────
 
 # 【修改点】在模块加载时静态固化 ALLOWED_KEYS，消除运行时的动态属性分支预测开销
-_ALLOWED_STRATEGY_KWARGS: FrozenSet[str] = frozenset(
-    name for name in inspect.signature(GridStrategy.__init__).parameters if name != "self"
-)
+# 保持兼容的构造字段白名单，避免依赖运行时反射和任意配置透传。
+_ALLOWED_STRATEGY_KWARGS: FrozenSet[str] = frozenset({
+    "symbol", "step", "tp_dist", "lot", "magic", "sl_dist", "window", "min_p", "max_p", "enabled",
+    "use_atr", "atr_period", "atr_factor", "atr_mode", "atr_timeframe", "adaptive_enabled",
+    "adaptive_timeframe", "adaptive_lookback", "adaptive_quantile_low", "adaptive_quantile_high",
+    "adaptive_step_mult_low", "adaptive_step_mult_high", "adaptive_lot_min_mult", "adaptive_lot_max_mult",
+    "adaptive_range_buffer_atr", "mode", "buy_window", "sell_window", "out_of_range_action",
+    "atr_update_seconds", "atr_smooth", "atr_change_threshold", "min_step_mult", "max_step_mult", "auto_trim",
+    "anchor", "recenter_steps", "recenter_cooldown", "max_long_pos", "max_short_pos", "max_long_vol",
+    "max_short_vol", "max_net_vol", "max_spread_points", "extreme_cooldown", "max_new_orders_per_update",
+    "hedge_enabled", "hedge_fraction", "hedge_tranches", "hedge_entry_steps", "hedge_exit_steps",
+    "hedge_cooldown", "max_gross_vol", "hedge_vol_lookback", "hedge_vol_window", "hedge_vol_quantile",
+    "hedge_vol_base", "hedge_vol_mult", "be_trigger_steps", "be_buffer_points", "utility_cost_weight",
+    "utility_distance_weight", "utility_risk_weight", "utility_fee_slippage_cost", "lock", "datafeed", "gateway",
+})
 _PENDING_ADD_RETRY_SECONDS = 10.0
 _PENDING_UPDATE_RETRY_SECONDS = 10.0
 
-def build_strategy(cfg: Dict[str, Any], *, lock: Any = None, datafeed: Any = None) -> GridStrategy:
+def build_strategy(
+    cfg: Dict[str, Any],
+    *,
+    lock: Any = None,
+    datafeed: Any = None,
+    gateway: Any = None,
+) -> GridStrategy:
     normalized = normalize_config(cfg)
+    settings = StrategySettings.from_legacy(normalized)
     kwargs = {key: normalized[key] for key in _ALLOWED_STRATEGY_KWARGS if key in normalized}
     if lock is not None:
         kwargs["lock"] = lock
     if datafeed is not None:
         kwargs["datafeed"] = datafeed
-    return GridStrategy(**kwargs)
+    if gateway is not None:
+        kwargs["gateway"] = gateway
+    strategy = GridStrategy(**kwargs)
+    # 仅挂载不可变配置快照，旧策略仍通过兼容字段运行。
+    strategy.settings = settings
+    strategy.risk_settings = settings.risk
+    return strategy
 
 
 class StrategyManager:
-    def __init__(self, broker, config_loader, datafeed: DataFeed | None = None, state_repository=None):
+    def __init__(self, broker, config_loader, datafeed: DataFeed | None = None, state_repository=None, execution_gateway=None):
         self.broker = broker
         self.config_loader = config_loader
         self.active: Dict[int, GridStrategy] = {}
@@ -352,6 +384,22 @@ class StrategyManager:
         self._updater = StrategyUpdater(broker)
         self.datafeed = datafeed or DataFeed(broker)
         self.state_repository = state_repository or FileStateRepository()
+        self.execution_gateway = execution_gateway
+
+    def set_execution_gateway(self, gateway) -> None:
+        """运行器启动前注入唯一券商网关，并同步已加载的兼容策略。"""
+        self.execution_gateway = gateway
+        for strategy in self.active.values():
+            strategy.gateway = gateway
+            self._configure_execution_policy(strategy)
+
+    @staticmethod
+    def _configure_execution_policy(strategy) -> None:
+        gateway = getattr(strategy, "gateway", None)
+        configure = getattr(gateway, "set_strategy_permission", None)
+        settings = getattr(strategy, "settings", None)
+        if configure is not None and settings is not None:
+            configure(settings.strategy_id, settings.risk.can_trade_live)
 
     def sync(self):
         configs = self._load_changed_configs()
@@ -437,7 +485,13 @@ class StrategyManager:
             return False
         normalized_cfg = dict(cfg)
         normalized_cfg["magic"] = magic
-        strategy = build_strategy(normalized_cfg, lock=self.broker.lock, datafeed=self.datafeed)
+        strategy = build_strategy(
+            normalized_cfg,
+            lock=self.broker.lock,
+            datafeed=self.datafeed,
+            gateway=self.execution_gateway,
+        )
+        self._configure_execution_policy(strategy)
         self._restore_strategy_state(strategy)
         self.active[magic] = strategy
         self._drop_pending_addition(magic)
@@ -445,6 +499,16 @@ class StrategyManager:
         strategy.clear_old_orders(force_all=True)
         self._persist_strategy_state(strategy)
         return True
+
+    @staticmethod
+    def _apply_risk_snapshot(strategy: GridStrategy, cfg: dict) -> None:
+        settings = StrategySettings.from_legacy(cfg)
+        strategy.settings = settings
+        strategy.risk_settings = settings.risk
+        gateway = getattr(strategy, "gateway", None)
+        configure = getattr(gateway, "set_strategy_permission", None)
+        if configure is not None:
+            configure(settings.strategy_id, settings.risk.can_trade_live)
 
     def _remove_strategy(self, magic: int):
         strategy = self.active.pop(magic, None)

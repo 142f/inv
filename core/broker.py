@@ -108,12 +108,32 @@ class BrokerBase(ABC):
         """Return latest tick for symbol."""
 
     @abstractmethod
+    def symbol_info(self, symbol: str) -> Any:
+        """返回品种交易规则。"""
+
+    @abstractmethod
     def order_send(self, request: dict) -> Any:
         """Send a trade request."""
 
     @abstractmethod
+    def order_check(self, request: dict) -> Any:
+        """预检交易请求。"""
+
+    @abstractmethod
+    def history_deals_get(self, *args: Any, **kwargs: Any) -> Any:
+        """读取历史成交，仅供统计和恢复使用。"""
+
+    @abstractmethod
     def copy_rates_from_pos(self, symbol: str, timeframe: int, start_pos: int, count: int) -> Any:
         """Return rates from position."""
+
+    @abstractmethod
+    def copy_rates_range(self, symbol: str, timeframe: Any, start: Any, end: Any) -> Any:
+        """按明确 UTC 区间读取已完成历史 K 线，仅供研究层使用。"""
+
+    @abstractmethod
+    def copy_ticks_range(self, symbol: str, start: Any, end: Any) -> Any:
+        """按明确 UTC 区间读取逐笔历史，仅供研究层复核使用。"""
 
 
 class MT5Broker(BrokerBase):
@@ -266,8 +286,26 @@ class MT5Broker(BrokerBase):
     def symbol_info_tick(self, symbol: str) -> Any:
         return mt5.symbol_info_tick(symbol)
 
+    def symbol_info(self, symbol: str) -> Any:
+        return mt5.symbol_info(symbol)
+
     def order_send(self, request: dict) -> Any:
         return mt5.order_send(request)
 
+    def order_check(self, request: dict) -> Any:
+        return mt5.order_check(request)
+
+    def history_deals_get(self, *args: Any, **kwargs: Any) -> Any:
+        return mt5.history_deals_get(*args, **kwargs)
+
     def copy_rates_from_pos(self, symbol: str, timeframe: int, start_pos: int, count: int) -> Any:
         return mt5.copy_rates_from_pos(symbol, timeframe, start_pos, count)
+
+    def copy_rates_range(self, symbol: str, timeframe: Any, start: Any, end: Any) -> Any:
+        native_timeframe = getattr(mt5, f"TIMEFRAME_{str(timeframe).upper()}", timeframe)
+        with self._lock:
+            return mt5.copy_rates_range(symbol, native_timeframe, start, end)
+
+    def copy_ticks_range(self, symbol: str, start: Any, end: Any) -> Any:
+        with self._lock:
+            return mt5.copy_ticks_range(symbol, start, end, mt5.COPY_TICKS_ALL)

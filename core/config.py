@@ -20,7 +20,8 @@ class ConfigLoader:
     ALLOWED_OUT_OF_RANGE_ACTIONS = {"freeze", "stop"}
     ALLOWED_ATR_MODES = {"wilder", "ema", "sma"}
     ALLOWED_TIMEFRAMES = {"M1", "M5", "M15", "M30", "H1", "H4", "D1"}
-    BOOL_FIELDS = ("enabled", "use_atr", "adaptive_enabled", "hedge_enabled", "auto_trim")
+    ALLOWED_EXECUTION_MODES = {"paper", "live"}
+    BOOL_FIELDS = ("enabled", "use_atr", "adaptive_enabled", "hedge_enabled", "auto_trim", "live_enabled")
 
     def __init__(self, config_path: Path | None = None):
         project_root = Path(__file__).resolve().parents[1]
@@ -126,6 +127,17 @@ class ConfigLoader:
                 raise ConfigValidationError(f"Invalid atr_mode: {atr_mode}")
             cfg["atr_mode"] = normalized_atr_mode
 
+        execution_mode = cfg.get("execution_mode")
+        if execution_mode is not None:
+            normalized_execution_mode = str(execution_mode).strip().lower()
+            if normalized_execution_mode not in self.ALLOWED_EXECUTION_MODES:
+                raise ConfigValidationError(f"Invalid execution_mode: {execution_mode}")
+            cfg["execution_mode"] = normalized_execution_mode
+
+        risk = cfg.get("risk")
+        if risk is not None and not isinstance(risk, dict):
+            raise ConfigValidationError("Field risk must be a mapping")
+
         for tf_key in ("atr_timeframe", "adaptive_timeframe"):
             if tf_key in cfg and cfg[tf_key] is not None:
                 tf = str(cfg[tf_key]).strip().upper()
@@ -161,6 +173,10 @@ class ConfigLoader:
         self._ensure_positive(cfg, "hedge_vol_base")
         self._ensure_positive(cfg, "be_trigger_steps")
         self._ensure_positive(cfg, "be_buffer_points", allow_zero=True)
+        self._ensure_positive(cfg, "max_actions_per_cycle")
+        self._ensure_positive(cfg, "min_margin_level")
+        self._ensure_positive(cfg, "max_daily_loss")
+        self._ensure_positive(cfg, "max_tick_age_seconds", allow_zero=True)
 
         self._ensure_non_negative(cfg, "atr_update_seconds")
         self._ensure_non_negative(cfg, "atr_change_threshold")
@@ -171,11 +187,13 @@ class ConfigLoader:
         self._ensure_non_negative(cfg, "utility_cost_weight")
         self._ensure_non_negative(cfg, "utility_distance_weight")
         self._ensure_non_negative(cfg, "utility_risk_weight")
+        self._ensure_non_negative(cfg, "utility_fee_slippage_cost")
 
         self._ensure_between(cfg, "hedge_fraction", low=0.0, high=1.0, inclusive=True)
         self._ensure_between(cfg, "hedge_vol_quantile", low=0.0, high=1.0, inclusive=True)
         self._ensure_between(cfg, "adaptive_quantile_low", low=0.0, high=1.0, inclusive=True)
         self._ensure_between(cfg, "adaptive_quantile_high", low=0.0, high=1.0, inclusive=True)
+        self._ensure_between(cfg, "max_drawdown_ratio", low=0.0, high=1.0, inclusive=True)
 
         if "adaptive_quantile_low" in cfg and "adaptive_quantile_high" in cfg:
             q_low = float(cfg["adaptive_quantile_low"])

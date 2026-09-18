@@ -12,10 +12,13 @@ class UtilityOrderSelector:
         cost_weight: float = 0.35,
         distance_weight: float = 0.2,
         risk_weight: float = 0.7,
+        fee_slippage_cost: float = 0.0,
     ) -> None:
         self.cost_weight = float(cost_weight)
         self.distance_weight = float(distance_weight)
         self.risk_weight = float(risk_weight)
+        # 统一换算为价格单位的预估单笔成本，由品种配置提供。
+        self.fee_slippage_cost = max(0.0, float(fee_slippage_cost))
 
     def rank(
         self,
@@ -54,7 +57,7 @@ class UtilityOrderSelector:
             reward = float(tp_dist) * p_fill
             distance = (tick_ask - price) if side_norm == "buy" else (price - tick_bid)
             distance_penalty = max(0.0, float(distance) - float(step) * 0.5)
-            cost_penalty = spread + self.distance_weight * distance_penalty
+            cost_penalty = spread + self.distance_weight * distance_penalty + self.fee_slippage_cost
             risk_penalty = float(step) * self.risk_weight * directional_pressure
             utility = reward - self.cost_weight * cost_penalty - risk_penalty
             ranked.append((utility, float(price)))
