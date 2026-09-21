@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 import json
 from math import isfinite
 from dataclasses import asdict, dataclass, field, is_dataclass
@@ -212,27 +213,30 @@ def select_extreme_windows(
     ordered = sorted(bars, key=lambda item: _time(item.timestamp))
     if not ordered:
         return ()
-    trade_stamps = tuple(_time(item) for item in trade_times)
+    bar_stamps = tuple(_time(item.timestamp) for item in ordered)
+    closes = tuple(item.close for item in ordered)
+    trade_stamps = sorted(_time(item) for item in trade_times)
     span = timedelta(days=days)
     candidates: list[tuple[ReviewWindow, ReviewWindow, ReviewWindow]] = []
     left = 0
-    for right, bar in enumerate(ordered):
-        end = _time(bar.timestamp)
-        while left < right and _time(ordered[left].timestamp) < end - span:
+    for right in range(len(ordered)):
+        end = bar_stamps[right]
+        while left < right and bar_stamps[left] < end - span:
             left += 1
-        window = ordered[left : right + 1]
-        if not window or end - _time(window[0].timestamp) < span - timedelta(minutes=5):
+        if end - bar_stamps[left] < span - timedelta(minutes=5):
             continue
-        closes = [item.close for item in window]
-        peak = closes[0]
+        peak = closes[left]
         drawdown = 0.0
-        for close in closes:
+        for close in closes[left : right + 1]:
             peak = max(peak, close)
             drawdown = max(drawdown, (peak - close) / max(peak, 1e-12))
-        returns = [current / prior - 1.0 for prior, current in zip(closes, closes[1:])]
+        returns = [
+            closes[index] / closes[index - 1] - 1.0
+            for index in range(left + 1, right + 1)
+        ]
         volatility = pstdev(returns) if len(returns) > 1 else 0.0
-        density = sum(1 for item in trade_stamps if _time(window[0].timestamp) <= item <= end)
-        start = _time(window[0].timestamp)
+        start = bar_stamps[left]
+        density = bisect_right(trade_stamps, end) - bisect_left(trade_stamps, start)
         candidates.append(
             (
                 ReviewWindow("最大回撤", start, end, drawdown),

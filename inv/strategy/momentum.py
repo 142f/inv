@@ -16,9 +16,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from math import sqrt
-from statistics import pstdev
 from typing import Sequence
 
 import numpy as np
@@ -38,7 +35,6 @@ class MomentumStrategy(BaseStrategy):
 
     def __init__(self, strategy_id: str, symbol: str) -> None:
         super().__init__(strategy_id, symbol)
-        self._cache_returns: dict[int, float] = {}
 
     def compute_signals(
         self,
@@ -47,14 +43,19 @@ class MomentumStrategy(BaseStrategy):
         settings: StrategySettings,
     ) -> Sequence[Signal]:
         if current_index < settings.lookback_period + 1:
-            return self._hold_signal(bars, current_index)
+            return self._hold_signal(bars, current_index, "momentum")
 
         # 仅使用已闭合数据：bars[:current_index+1]
         lookback = settings.lookback_period
-        closes = np.array([float(b.close) for b in bars[: current_index + 1]], dtype=np.float64)
+        # 动量和波动率最多依赖 2 * lookback 期收益，无需复制全部历史。
+        start = max(0, current_index - lookback * 2)
+        closes = np.fromiter(
+            (float(b.close) for b in bars[start : current_index + 1]),
+            dtype=np.float64,
+        )
 
         if len(closes) < lookback + 2:
-            return self._hold_signal(bars, current_index)
+            return self._hold_signal(bars, current_index, "momentum")
 
         # 计算历史收益率序列
         returns = np.diff(np.log(closes))
@@ -67,7 +68,7 @@ class MomentumStrategy(BaseStrategy):
         vol = float(np.std(hist_returns, ddof=1)) if len(hist_returns) > 1 else 1e-12
 
         if vol < 1e-12:
-            return self._hold_signal(bars, current_index)
+            return self._hold_signal(bars, current_index, "momentum")
 
         # 标准化动量信号
         normalized_momentum = momentum_return / vol
@@ -139,50 +140,4 @@ class MomentumStrategy(BaseStrategy):
                 )
             ]
 
-        return self._hold_signal(bars, current_index)
-
-    def _calc_atr(
-        self, bars: Sequence[Bar], current_index: int, period: int
-    ) -> float | None:
-        """计算 ATR，仅使用已闭合数据。"""
-        if current_index < period + 1:
-            return None
-        start = max(0, current_index - period - 1)
-        tail = bars[start : current_index + 1]
-        if len(tail) < period + 1:
-            return None
-        true_ranges = []
-        for prev, curr in zip(tail, tail[1:]):
-            tr = max(
-                curr.high - curr.low,
-                abs(curr.high - prev.close),
-                abs(curr.low - prev.close),
-            )
-            true_ranges.append(tr)
-        if not true_ranges:
-            return None
-        return sum(true_ranges[-period:]) / period
-
-    def _hold_signal(
-        self, bars: Sequence[Bar], current_index: int
-    ) -> list[Signal]:
-        return [
-            Signal(
-                timestamp=self._get_timestamp(bars, current_index),
-                symbol=self.symbol,
-                signal_type=SignalType.HOLD,
-                metadata={"strategy": "momentum"},
-            )
-        ]
-
-    @staticmethod
-    def _get_timestamp(bars: Sequence[Bar], current_index: int) -> datetime:
-        ts = bars[min(current_index, len(bars) - 1)].timestamp
-        if isinstance(ts, datetime):
-            return ts
-        from datetime import timezone
-        return datetime.fromtimestamp(float(ts), tz=timezone.utc)
-
-    def reset_state(self) -> None:
-        super().reset_state()
-        self._cache_returns.clear()
+        return self._hold_signal(bars, current_index, "momentum")

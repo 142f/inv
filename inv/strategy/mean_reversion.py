@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Sequence
 
 import numpy as np
@@ -39,16 +38,20 @@ class MeanReversionStrategy(BaseStrategy):
     ) -> Sequence[Signal]:
         lookback = settings.lookback_period
         if current_index < lookback:
-            return self._hold_signal(bars, current_index)
+            return self._hold_signal(bars, current_index, "mean_reversion")
 
-        closes = np.array([float(b.close) for b in bars[: current_index + 1]], dtype=np.float64)
-        if len(closes) < lookback + 1:
-            return self._hold_signal(bars, current_index)
+        start = current_index - lookback + 1
+        closes = np.fromiter(
+            (float(b.close) for b in bars[start : current_index + 1]),
+            dtype=np.float64,
+        )
+        if len(closes) < lookback:
+            return self._hold_signal(bars, current_index, "mean_reversion")
 
         # 封装布林带相关的统计计算
         ma, std = self._bollinger_stats(closes, lookback)
         if std < 1e-12:
-            return self._hold_signal(bars, current_index)
+            return self._hold_signal(bars, current_index, "mean_reversion")
 
         current_close = closes[-1]
         timestamp = self._get_timestamp(bars, current_index)
@@ -156,7 +159,7 @@ class MeanReversionStrategy(BaseStrategy):
                 )
             ]
 
-        return self._hold_signal(bars, current_index)
+        return self._hold_signal(bars, current_index, "mean_reversion")
 
     @staticmethod
     def _bollinger_stats(closes: np.ndarray, period: int) -> tuple[float, float]:
@@ -166,43 +169,3 @@ class MeanReversionStrategy(BaseStrategy):
         std = float(np.std(tail, ddof=1))
         return ma, std
 
-    def _calc_atr(
-        self, bars: Sequence[Bar], current_index: int, period: int
-    ) -> float | None:
-        """计算 ATR，仅使用已闭合数据。"""
-        if current_index < period + 1:
-            return None
-        start = max(0, current_index - period - 1)
-        tail = bars[start : current_index + 1]
-        if len(tail) < period + 1:
-            return None
-        true_ranges = []
-        for prev, curr in zip(tail, tail[1:]):
-            tr = max(
-                curr.high - curr.low,
-                abs(curr.high - prev.close),
-                abs(curr.low - prev.close),
-            )
-            true_ranges.append(tr)
-        if not true_ranges:
-            return None
-        return sum(true_ranges[-period:]) / period
-
-    def _hold_signal(
-        self, bars: Sequence[Bar], current_index: int
-    ) -> list[Signal]:
-        return [
-            Signal(
-                timestamp=self._get_timestamp(bars, current_index),
-                symbol=self.symbol,
-                signal_type=SignalType.HOLD,
-                metadata={"strategy": "mean_reversion"},
-            )
-        ]
-
-    @staticmethod
-    def _get_timestamp(bars: Sequence[Bar], current_index: int) -> datetime:
-        ts = bars[min(current_index, len(bars) - 1)].timestamp
-        if isinstance(ts, datetime):
-            return ts
-        return datetime.fromtimestamp(float(ts), tz=timezone.utc)

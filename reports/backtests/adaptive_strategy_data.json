@@ -1,0 +1,819 @@
+{
+  "xau": {
+    "phases": [
+      [
+        {
+          "iteration_id": "Overall_R1_R1",
+          "params": {
+            "lot": 0.1,
+            "window": 6,
+            "atr_period": 14,
+            "lookback_period": 20,
+            "entry_threshold": 1.8,
+            "exit_threshold": 0.5,
+            "stop_loss_atr": 2.5,
+            "take_profit_atr": 3.5,
+            "risk_per_trade": 0.005,
+            "commission_pct": 0.0003,
+            "slippage_pct": 0.0003,
+            "max_net_vol": 1.0
+          },
+          "metrics": {
+            "net_profit": 391696.1323670369,
+            "max_drawdown": 413.96974012192084,
+            "sharpe_ratio": -0.21105022330871323,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.8647764449291166,
+            "payoff_ratio": 1.5821473277298799,
+            "profit_factor": 10.11808734588545,
+            "trade_count": 917,
+            "annualized_return": 0.0,
+            "volatility": 5.387612176677305
+          },
+          "review_notes": "净利润=391696.13, 最大回撤=41397.0%, 夏普=-0.21, Calmar=0.00, 胜率=86.5%, 盈亏比=1.58, Profit Factor=10.12, 交易次数=917 | 问题: 最大回撤偏高 (41397.0%); 夏普比率偏低 (-0.21); Calmar 比率偏低 (0.00) | 改进: 考虑调整止损宽度或入场阈值; 需要降低回撤或提高收益; 考虑减少交易频率或降低手数",
+          "problems": [
+            "最大回撤偏高 (41397.0%)",
+            "夏普比率偏低 (-0.21)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (983597.42)"
+          ],
+          "changes": [
+            "初始参数配置"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R1_R2",
+          "params": {
+            "lot": 0.1,
+            "window": 6,
+            "atr_period": 14,
+            "lookback_period": 22,
+            "entry_threshold": 2.277,
+            "exit_threshold": 0.5,
+            "stop_loss_atr": 2.125,
+            "take_profit_atr": 3.5,
+            "risk_per_trade": 0.004,
+            "commission_pct": 0.0003,
+            "slippage_pct": 0.0003,
+            "max_net_vol": 1.0
+          },
+          "metrics": {
+            "net_profit": 396412.30396316055,
+            "max_drawdown": 383.5555064724032,
+            "sharpe_ratio": -0.33432188637846816,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.8787210584343991,
+            "payoff_ratio": 1.2811443586859732,
+            "profit_factor": 9.282473217024748,
+            "trade_count": 907,
+            "annualized_return": 0.0,
+            "volatility": 1.0134362341531864
+          },
+          "review_notes": "净利润=396412.30, 最大回撤=38355.6%, 夏普=-0.33, Calmar=0.00, 胜率=87.9%, 盈亏比=1.28, Profit Factor=9.28, 交易次数=907 | 问题: 最大回撤偏高 (38355.6%); 夏普比率偏低 (-0.33); Calmar 比率偏低 (0.00) | 改进: 考虑调整止损宽度或入场阈值; 需要降低回撤或提高收益; 考虑减少交易频率或降低手数",
+          "problems": [
+            "最大回撤偏高 (38355.6%)",
+            "夏普比率偏低 (-0.33)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (988876.30)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (38355.6%)",
+            "→ 修复: 夏普比率偏低 (-0.33)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (988876.30)"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R1_R3",
+          "params": {
+            "lot": 0.1,
+            "window": 6,
+            "atr_period": 14,
+            "lookback_period": 24,
+            "entry_threshold": 2.880405,
+            "exit_threshold": 0.5,
+            "stop_loss_atr": 1.80625,
+            "take_profit_atr": 3.5,
+            "risk_per_trade": 0.0032,
+            "commission_pct": 0.0003,
+            "slippage_pct": 0.0003,
+            "max_net_vol": 1.0
+          },
+          "metrics": {
+            "net_profit": 379482.0079501595,
+            "max_drawdown": 1319.579442935858,
+            "sharpe_ratio": -0.5811444761030934,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.8963963963963963,
+            "payoff_ratio": 0.8711189249866644,
+            "profit_factor": 7.5370724379281056,
+            "trade_count": 888,
+            "annualized_return": 0.0,
+            "volatility": 0.5844593942231907
+          },
+          "review_notes": "净利润=379482.01, 最大回撤=131957.9%, 夏普=-0.58, Calmar=0.00, 胜率=89.6%, 盈亏比=0.87, Profit Factor=7.54, 交易次数=888 | 问题: 最大回撤偏高 (131957.9%); 夏普比率偏低 (-0.58); 胜率高但盈亏比低 (0.87) | 改进: 考虑调整止损宽度或入场阈值; 考虑扩大止盈目标; 需要降低回撤或提高收益",
+          "problems": [
+            "最大回撤偏高 (131957.9%)",
+            "夏普比率偏低 (-0.58)",
+            "胜率高但盈亏比低 (0.87)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (994822.11)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (131957.9%)",
+            "→ 修复: 夏普比率偏低 (-0.58)",
+            "→ 修复: 胜率高但盈亏比低 (0.87)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (994822.11)"
+          ]
+        }
+      ],
+      [
+        {
+          "iteration_id": "Overall_R2_R1",
+          "params": {
+            "lot": 0.15,
+            "window": 8,
+            "atr_period": 12,
+            "lookback_period": 25,
+            "entry_threshold": 1.5,
+            "exit_threshold": 0.4,
+            "stop_loss_atr": 2.0,
+            "take_profit_atr": 4.0,
+            "risk_per_trade": 0.008,
+            "commission_pct": 0.0003,
+            "slippage_pct": 0.0003,
+            "max_net_vol": 1.5
+          },
+          "metrics": {
+            "net_profit": 385455.45703938784,
+            "max_drawdown": 1423.1439082629122,
+            "sharpe_ratio": -0.2929193049667209,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.837037037037037,
+            "payoff_ratio": 1.3499828342889255,
+            "profit_factor": 6.934002739756755,
+            "trade_count": 810,
+            "annualized_return": 0.0,
+            "volatility": 2.939999426246781
+          },
+          "review_notes": "净利润=385455.46, 最大回撤=142314.4%, 夏普=-0.29, Calmar=0.00, 胜率=83.7%, 盈亏比=1.35, Profit Factor=6.93, 交易次数=810 | 问题: 最大回撤偏高 (142314.4%); 夏普比率偏低 (-0.29); Calmar 比率偏低 (0.00) | 改进: 考虑调整止损宽度或入场阈值; 需要降低回撤或提高收益; 考虑减少交易频率或降低手数",
+          "problems": [
+            "最大回撤偏高 (142314.4%)",
+            "夏普比率偏低 (-0.29)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (1017597.07)"
+          ],
+          "changes": [
+            "初始参数配置"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R2_R2",
+          "params": {
+            "lot": 0.15,
+            "window": 8,
+            "atr_period": 12,
+            "lookback_period": 27,
+            "entry_threshold": 1.8975,
+            "exit_threshold": 0.4,
+            "stop_loss_atr": 1.7,
+            "take_profit_atr": 4.0,
+            "risk_per_trade": 0.0064,
+            "commission_pct": 0.0003,
+            "slippage_pct": 0.0003,
+            "max_net_vol": 1.5
+          },
+          "metrics": {
+            "net_profit": 357531.85036261997,
+            "max_drawdown": 1521.3271287434475,
+            "sharpe_ratio": -0.32668612339339764,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.8264462809917356,
+            "payoff_ratio": 0.9464051484424769,
+            "profit_factor": 4.506691183059421,
+            "trade_count": 847,
+            "annualized_return": 0.0,
+            "volatility": 1.325909837444956
+          },
+          "review_notes": "净利润=357531.85, 最大回撤=152132.7%, 夏普=-0.33, Calmar=0.00, 胜率=82.6%, 盈亏比=0.95, Profit Factor=4.51, 交易次数=847 | 问题: 最大回撤偏高 (152132.7%); 夏普比率偏低 (-0.33); 胜率高但盈亏比低 (0.95) | 改进: 考虑调整止损宽度或入场阈值; 考虑扩大止盈目标; 需要降低回撤或提高收益",
+          "problems": [
+            "最大回撤偏高 (152132.7%)",
+            "夏普比率偏低 (-0.33)",
+            "胜率高但盈亏比低 (0.95)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (1020850.33)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (152132.7%)",
+            "→ 修复: 夏普比率偏低 (-0.33)",
+            "→ 修复: 胜率高但盈亏比低 (0.95)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (1020850.33)"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R2_R3",
+          "params": {
+            "lot": 0.15,
+            "window": 8,
+            "atr_period": 12,
+            "lookback_period": 29,
+            "entry_threshold": 2.4003375,
+            "exit_threshold": 0.4,
+            "stop_loss_atr": 1.4449999999999998,
+            "take_profit_atr": 5.2,
+            "risk_per_trade": 0.00512,
+            "commission_pct": 0.0003,
+            "slippage_pct": 0.0003,
+            "max_net_vol": 1.5
+          },
+          "metrics": {
+            "net_profit": 333556.93816790666,
+            "max_drawdown": 1396.1885678874082,
+            "sharpe_ratio": -0.6059349585539118,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.8136200716845878,
+            "payoff_ratio": 0.8369251792325102,
+            "profit_factor": 3.6535003016496104,
+            "trade_count": 837,
+            "annualized_return": 0.0,
+            "volatility": 0.5224421030079263
+          },
+          "review_notes": "净利润=333556.94, 最大回撤=139618.9%, 夏普=-0.61, Calmar=0.00, 胜率=81.4%, 盈亏比=0.84, Profit Factor=3.65, 交易次数=837 | 问题: 最大回撤偏高 (139618.9%); 夏普比率偏低 (-0.61); 胜率高但盈亏比低 (0.84) | 改进: 考虑调整止损宽度或入场阈值; 考虑扩大止盈目标; 需要降低回撤或提高收益",
+          "problems": [
+            "最大回撤偏高 (139618.9%)",
+            "夏普比率偏低 (-0.61)",
+            "胜率高但盈亏比低 (0.84)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (1020827.81)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (139618.9%)",
+            "→ 修复: 夏普比率偏低 (-0.61)",
+            "→ 修复: 胜率高但盈亏比低 (0.84)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (1020827.81)"
+          ]
+        }
+      ],
+      [
+        {
+          "iteration_id": "Overall_R3_R1",
+          "params": {
+            "lot": 0.2,
+            "window": 10,
+            "atr_period": 10,
+            "lookback_period": 30,
+            "entry_threshold": 1.2,
+            "exit_threshold": 0.3,
+            "stop_loss_atr": 1.5,
+            "take_profit_atr": 4.5,
+            "risk_per_trade": 0.01,
+            "commission_pct": 0.0003,
+            "slippage_pct": 0.0003,
+            "max_net_vol": 2.0
+          },
+          "metrics": {
+            "net_profit": 307989.6714567307,
+            "max_drawdown": 1033.9491183642858,
+            "sharpe_ratio": -0.33026701889335364,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.7331606217616581,
+            "payoff_ratio": 1.0822753325597325,
+            "profit_factor": 2.973630282664119,
+            "trade_count": 772,
+            "annualized_return": 0.0,
+            "volatility": 1.039740405867432
+          },
+          "review_notes": "净利润=307989.67, 最大回撤=103394.9%, 夏普=-0.33, Calmar=0.00, 胜率=73.3%, 盈亏比=1.08, Profit Factor=2.97, 交易次数=772 | 问题: 最大回撤偏高 (103394.9%); 夏普比率偏低 (-0.33); Calmar 比率偏低 (0.00) | 改进: 考虑调整止损宽度或入场阈值; 需要降低回撤或提高收益; 考虑减少交易频率或降低手数",
+          "problems": [
+            "最大回撤偏高 (103394.9%)",
+            "夏普比率偏低 (-0.33)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (1050646.89)"
+          ],
+          "changes": [
+            "初始参数配置"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R3_R2",
+          "params": {
+            "lot": 0.2,
+            "window": 10,
+            "atr_period": 10,
+            "lookback_period": 33,
+            "entry_threshold": 1.518,
+            "exit_threshold": 0.3,
+            "stop_loss_atr": 1.275,
+            "take_profit_atr": 4.5,
+            "risk_per_trade": 0.008,
+            "commission_pct": 0.0003,
+            "slippage_pct": 0.0003,
+            "max_net_vol": 2.0
+          },
+          "metrics": {
+            "net_profit": 316474.76605457027,
+            "max_drawdown": 1099.114391755927,
+            "sharpe_ratio": -0.2964290105258921,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.6949152542372882,
+            "payoff_ratio": 1.172940654911105,
+            "profit_factor": 2.6716981584086263,
+            "trade_count": 826,
+            "annualized_return": 0.0,
+            "volatility": 0.9357630019140764
+          },
+          "review_notes": "净利润=316474.77, 最大回撤=109911.4%, 夏普=-0.30, Calmar=0.00, 胜率=69.5%, 盈亏比=1.17, Profit Factor=2.67, 交易次数=826 | 问题: 最大回撤偏高 (109911.4%); 夏普比率偏低 (-0.30); Calmar 比率偏低 (0.00) | 改进: 考虑调整止损宽度或入场阈值; 需要降低回撤或提高收益; 考虑减少交易频率或降低手数",
+          "problems": [
+            "最大回撤偏高 (109911.4%)",
+            "夏普比率偏低 (-0.30)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (1060607.68)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (109911.4%)",
+            "→ 修复: 夏普比率偏低 (-0.30)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (1060607.68)"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R3_R3",
+          "params": {
+            "lot": 0.2,
+            "window": 10,
+            "atr_period": 10,
+            "lookback_period": 36,
+            "entry_threshold": 1.92027,
+            "exit_threshold": 0.3,
+            "stop_loss_atr": 1.08375,
+            "take_profit_atr": 4.5,
+            "risk_per_trade": 0.0064,
+            "commission_pct": 0.0003,
+            "slippage_pct": 0.0003,
+            "max_net_vol": 2.0
+          },
+          "metrics": {
+            "net_profit": 256890.0987952486,
+            "max_drawdown": 970.6204447000599,
+            "sharpe_ratio": -0.3069067007608461,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.6309794988610479,
+            "payoff_ratio": 1.192977182929564,
+            "profit_factor": 2.0398437016758595,
+            "trade_count": 878,
+            "annualized_return": 0.0,
+            "volatility": 1.6919122018701724
+          },
+          "review_notes": "净利润=256890.10, 最大回撤=97062.0%, 夏普=-0.31, Calmar=0.00, 胜率=63.1%, 盈亏比=1.19, Profit Factor=2.04, 交易次数=878 | 问题: 最大回撤偏高 (97062.0%); 夏普比率偏低 (-0.31); Calmar 比率偏低 (0.00) | 改进: 考虑调整止损宽度或入场阈值; 需要降低回撤或提高收益; 考虑减少交易频率或降低手数",
+          "problems": [
+            "最大回撤偏高 (97062.0%)",
+            "夏普比率偏低 (-0.31)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (1073522.78)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (97062.0%)",
+            "→ 修复: 夏普比率偏低 (-0.31)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (1073522.78)"
+          ]
+        }
+      ]
+    ],
+    "best_iteration": "Overall_R1_R1"
+  },
+  "btc": {
+    "phases": [
+      [
+        {
+          "iteration_id": "Overall_R1_R1",
+          "params": {
+            "lot": 0.05,
+            "atr_period": 14,
+            "lookback_period": 20,
+            "entry_threshold": 2.0,
+            "exit_threshold": 0.6,
+            "stop_loss_atr": 3.0,
+            "take_profit_atr": 5.0,
+            "risk_per_trade": 0.005,
+            "commission_pct": 0.0005,
+            "slippage_pct": 0.0008,
+            "max_net_vol": 0.5,
+            "breakout_lookback": 20,
+            "max_positions": 1
+          },
+          "metrics": {
+            "net_profit": -1418289.3669502258,
+            "max_drawdown": 12.571717935452352,
+            "sharpe_ratio": -0.1536820512644767,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.01397796415063312,
+            "payoff_ratio": 0.8692247747325467,
+            "profit_factor": 0.0123222324636869,
+            "trade_count": 6081,
+            "annualized_return": 0.0,
+            "volatility": 2.4758412024676817
+          },
+          "review_notes": "净利润=-1418289.37, 最大回撤=1257.2%, 夏普=-0.15, Calmar=0.00, 胜率=1.4%, 盈亏比=0.87, Profit Factor=0.01, 交易次数=6081 | 问题: 最大回撤偏高 (1257.2%); 夏普比率偏低 (-0.15); Profit Factor < 1.0 (0.01)，策略整体亏损 | 改进: 考虑调整止损宽度或入场阈值; 重新评估策略方向和参数配置; 考虑提高入场门槛或增加确认条件",
+          "problems": [
+            "最大回撤偏高 (1257.2%)",
+            "夏普比率偏低 (-0.15)",
+            "Profit Factor < 1.0 (0.01)，策略整体亏损",
+            "胜率偏低 (1.4%)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (91495.68)"
+          ],
+          "changes": [
+            "初始参数配置"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R1_R2",
+          "params": {
+            "lot": 0.05,
+            "atr_period": 14,
+            "lookback_period": 22,
+            "entry_threshold": 2.53,
+            "exit_threshold": 0.6,
+            "stop_loss_atr": 2.55,
+            "take_profit_atr": 5.0,
+            "risk_per_trade": 0.004,
+            "commission_pct": 0.0005,
+            "slippage_pct": 0.0008,
+            "max_net_vol": 0.5,
+            "breakout_lookback": 24,
+            "max_positions": 1
+          },
+          "metrics": {
+            "net_profit": -1808087.955950099,
+            "max_drawdown": 17.260433080996194,
+            "sharpe_ratio": -1.0383974675575318,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.009753678293932882,
+            "payoff_ratio": 0.43732558350624856,
+            "profit_factor": 0.004307547483617494,
+            "trade_count": 6049,
+            "annualized_return": 0.0,
+            "volatility": 0.7059615385358599
+          },
+          "review_notes": "净利润=-1808087.96, 最大回撤=1726.0%, 夏普=-1.04, Calmar=0.00, 胜率=1.0%, 盈亏比=0.44, Profit Factor=0.00, 交易次数=6049 | 问题: 最大回撤偏高 (1726.0%); 夏普比率偏低 (-1.04); Profit Factor < 1.0 (0.00)，策略整体亏损 | 改进: 考虑调整止损宽度或入场阈值; 重新评估策略方向和参数配置; 考虑提高入场门槛或增加确认条件",
+          "problems": [
+            "最大回撤偏高 (1726.0%)",
+            "夏普比率偏低 (-1.04)",
+            "Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "胜率偏低 (1.0%)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (90093.90)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (1726.0%)",
+            "→ 修复: 夏普比率偏低 (-1.04)",
+            "→ 修复: Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "→ 修复: 胜率偏低 (1.0%)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (90093.90)"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R1_R3",
+          "params": {
+            "lot": 0.05,
+            "atr_period": 14,
+            "lookback_period": 24,
+            "entry_threshold": 3.2004499999999996,
+            "exit_threshold": 0.6,
+            "stop_loss_atr": 2.1675,
+            "take_profit_atr": 5.0,
+            "risk_per_trade": 0.0032,
+            "commission_pct": 0.0005,
+            "slippage_pct": 0.0008,
+            "max_net_vol": 0.5,
+            "breakout_lookback": 28,
+            "max_positions": 1
+          },
+          "metrics": {
+            "net_profit": -2219580.714173996,
+            "max_drawdown": 22.128715426135642,
+            "sharpe_ratio": -0.2906531832215815,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.006468734450157572,
+            "payoff_ratio": 0.17819515051701507,
+            "profit_factor": 0.0011602021486082777,
+            "trade_count": 6029,
+            "annualized_return": 0.0,
+            "volatility": 5.319593583671141
+          },
+          "review_notes": "净利润=-2219580.71, 最大回撤=2212.9%, 夏普=-0.29, Calmar=0.00, 胜率=0.6%, 盈亏比=0.18, Profit Factor=0.00, 交易次数=6029 | 问题: 最大回撤偏高 (2212.9%); 夏普比率偏低 (-0.29); Profit Factor < 1.0 (0.00)，策略整体亏损 | 改进: 考虑调整止损宽度或入场阈值; 重新评估策略方向和参数配置; 考虑提高入场门槛或增加确认条件",
+          "problems": [
+            "最大回撤偏高 (2212.9%)",
+            "夏普比率偏低 (-0.29)",
+            "Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "胜率偏低 (0.6%)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (89722.24)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (2212.9%)",
+            "→ 修复: 夏普比率偏低 (-0.29)",
+            "→ 修复: Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "→ 修复: 胜率偏低 (0.6%)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (89722.24)"
+          ]
+        }
+      ],
+      [
+        {
+          "iteration_id": "Overall_R2_R1",
+          "params": {
+            "lot": 0.08,
+            "atr_period": 12,
+            "lookback_period": 25,
+            "entry_threshold": 1.6,
+            "exit_threshold": 0.5,
+            "stop_loss_atr": 2.5,
+            "take_profit_atr": 5.5,
+            "risk_per_trade": 0.008,
+            "commission_pct": 0.0005,
+            "slippage_pct": 0.0008,
+            "max_net_vol": 0.8,
+            "breakout_lookback": 25,
+            "max_positions": 1
+          },
+          "metrics": {
+            "net_profit": -3154634.995379224,
+            "max_drawdown": 84.85994541548398,
+            "sharpe_ratio": -0.5708284103803802,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.00761626964835521,
+            "payoff_ratio": 0.7449517825314851,
+            "profit_factor": 0.005717298135039174,
+            "trade_count": 6171,
+            "annualized_return": 0.0,
+            "volatility": 1.4742625238897151
+          },
+          "review_notes": "净利润=-3154635.00, 最大回撤=8486.0%, 夏普=-0.57, Calmar=0.00, 胜率=0.8%, 盈亏比=0.74, Profit Factor=0.01, 交易次数=6171 | 问题: 最大回撤偏高 (8486.0%); 夏普比率偏低 (-0.57); Profit Factor < 1.0 (0.01)，策略整体亏损 | 改进: 考虑调整止损宽度或入场阈值; 重新评估策略方向和参数配置; 考虑提高入场门槛或增加确认条件",
+          "problems": [
+            "最大回撤偏高 (8486.0%)",
+            "夏普比率偏低 (-0.57)",
+            "Profit Factor < 1.0 (0.01)，策略整体亏损",
+            "胜率偏低 (0.8%)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (160553.33)"
+          ],
+          "changes": [
+            "初始参数配置"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R2_R2",
+          "params": {
+            "lot": 0.08,
+            "atr_period": 12,
+            "lookback_period": 27,
+            "entry_threshold": 2.024,
+            "exit_threshold": 0.5,
+            "stop_loss_atr": 2.125,
+            "take_profit_atr": 5.5,
+            "risk_per_trade": 0.0064,
+            "commission_pct": 0.0005,
+            "slippage_pct": 0.0008,
+            "max_net_vol": 0.8,
+            "breakout_lookback": 30,
+            "max_positions": 1
+          },
+          "metrics": {
+            "net_profit": -3983696.426161364,
+            "max_drawdown": 42.39372418021965,
+            "sharpe_ratio": -0.7663091793491537,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.011232296923327365,
+            "payoff_ratio": 0.501303965824815,
+            "profit_factor": 0.005694760230805461,
+            "trade_count": 6143,
+            "annualized_return": 0.0,
+            "volatility": 0.6336676427767162
+          },
+          "review_notes": "净利润=-3983696.43, 最大回撤=4239.4%, 夏普=-0.77, Calmar=0.00, 胜率=1.1%, 盈亏比=0.50, Profit Factor=0.01, 交易次数=6143 | 问题: 最大回撤偏高 (4239.4%); 夏普比率偏低 (-0.77); Profit Factor < 1.0 (0.01)，策略整体亏损 | 改进: 考虑调整止损宽度或入场阈值; 重新评估策略方向和参数配置; 考虑提高入场门槛或增加确认条件",
+          "problems": [
+            "最大回撤偏高 (4239.4%)",
+            "夏普比率偏低 (-0.77)",
+            "Profit Factor < 1.0 (0.01)，策略整体亏损",
+            "胜率偏低 (1.1%)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (147596.75)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (4239.4%)",
+            "→ 修复: 夏普比率偏低 (-0.77)",
+            "→ 修复: Profit Factor < 1.0 (0.01)，策略整体亏损",
+            "→ 修复: 胜率偏低 (1.1%)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (147596.75)"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R2_R3",
+          "params": {
+            "lot": 0.08,
+            "atr_period": 12,
+            "lookback_period": 29,
+            "entry_threshold": 2.56036,
+            "exit_threshold": 0.5,
+            "stop_loss_atr": 1.80625,
+            "take_profit_atr": 5.5,
+            "risk_per_trade": 0.00512,
+            "commission_pct": 0.0005,
+            "slippage_pct": 0.0008,
+            "max_net_vol": 0.8,
+            "breakout_lookback": 36,
+            "max_positions": 1
+          },
+          "metrics": {
+            "net_profit": -5084622.500776989,
+            "max_drawdown": 50.14654070395196,
+            "sharpe_ratio": -0.513022451591944,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.007699868938401048,
+            "payoff_ratio": 0.216373278627226,
+            "profit_factor": 0.0016789737651443986,
+            "trade_count": 6104,
+            "annualized_return": 0.0,
+            "volatility": 1.352872509091406
+          },
+          "review_notes": "净利润=-5084622.50, 最大回撤=5014.7%, 夏普=-0.51, Calmar=0.00, 胜率=0.8%, 盈亏比=0.22, Profit Factor=0.00, 交易次数=6104 | 问题: 最大回撤偏高 (5014.7%); 夏普比率偏低 (-0.51); Profit Factor < 1.0 (0.00)，策略整体亏损 | 改进: 考虑调整止损宽度或入场阈值; 重新评估策略方向和参数配置; 考虑提高入场门槛或增加确认条件",
+          "problems": [
+            "最大回撤偏高 (5014.7%)",
+            "夏普比率偏低 (-0.51)",
+            "Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "胜率偏低 (0.8%)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (145083.27)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (5014.7%)",
+            "→ 修复: 夏普比率偏低 (-0.51)",
+            "→ 修复: Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "→ 修复: 胜率偏低 (0.8%)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (145083.27)"
+          ]
+        }
+      ],
+      [
+        {
+          "iteration_id": "Overall_R3_R1",
+          "params": {
+            "lot": 0.1,
+            "atr_period": 10,
+            "lookback_period": 30,
+            "entry_threshold": 1.3,
+            "exit_threshold": 0.4,
+            "stop_loss_atr": 2.0,
+            "take_profit_atr": 6.0,
+            "risk_per_trade": 0.01,
+            "commission_pct": 0.0005,
+            "slippage_pct": 0.0008,
+            "max_net_vol": 1.0,
+            "breakout_lookback": 30,
+            "max_positions": 1
+          },
+          "metrics": {
+            "net_profit": -5194328.929346388,
+            "max_drawdown": 107.9415196954661,
+            "sharpe_ratio": -0.8349478325976272,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.0043788517677586765,
+            "payoff_ratio": 0.37907832216475884,
+            "profit_factor": 0.0016672283268363622,
+            "trade_count": 6166,
+            "annualized_return": 0.0,
+            "volatility": 0.8019418988803003
+          },
+          "review_notes": "净利润=-5194328.93, 最大回撤=10794.2%, 夏普=-0.83, Calmar=0.00, 胜率=0.4%, 盈亏比=0.38, Profit Factor=0.00, 交易次数=6166 | 问题: 最大回撤偏高 (10794.2%); 夏普比率偏低 (-0.83); Profit Factor < 1.0 (0.00)，策略整体亏损 | 改进: 考虑调整止损宽度或入场阈值; 重新评估策略方向和参数配置; 考虑提高入场门槛或增加确认条件",
+          "problems": [
+            "最大回撤偏高 (10794.2%)",
+            "夏普比率偏低 (-0.83)",
+            "Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "胜率偏低 (0.4%)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (211356.83)"
+          ],
+          "changes": [
+            "初始参数配置"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R3_R2",
+          "params": {
+            "lot": 0.1,
+            "atr_period": 10,
+            "lookback_period": 33,
+            "entry_threshold": 1.6445,
+            "exit_threshold": 0.4,
+            "stop_loss_atr": 1.7,
+            "take_profit_atr": 6.0,
+            "risk_per_trade": 0.008,
+            "commission_pct": 0.0005,
+            "slippage_pct": 0.0008,
+            "max_net_vol": 1.0,
+            "breakout_lookback": 36,
+            "max_positions": 1
+          },
+          "metrics": {
+            "net_profit": -6531785.958984607,
+            "max_drawdown": 139.850222603319,
+            "sharpe_ratio": -0.8739476279515923,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.006349723217193097,
+            "payoff_ratio": 0.2853037679405189,
+            "profit_factor": 0.0018231766261969824,
+            "trade_count": 6142,
+            "annualized_return": 0.0,
+            "volatility": 0.7953177540555012
+          },
+          "review_notes": "净利润=-6531785.96, 最大回撤=13985.0%, 夏普=-0.87, Calmar=0.00, 胜率=0.6%, 盈亏比=0.29, Profit Factor=0.00, 交易次数=6142 | 问题: 最大回撤偏高 (13985.0%); 夏普比率偏低 (-0.87); Profit Factor < 1.0 (0.00)，策略整体亏损 | 改进: 考虑调整止损宽度或入场阈值; 重新评估策略方向和参数配置; 考虑提高入场门槛或增加确认条件",
+          "problems": [
+            "最大回撤偏高 (13985.0%)",
+            "夏普比率偏低 (-0.87)",
+            "Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "胜率偏低 (0.6%)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (199104.06)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (13985.0%)",
+            "→ 修复: 夏普比率偏低 (-0.87)",
+            "→ 修复: Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "→ 修复: 胜率偏低 (0.6%)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (199104.06)"
+          ]
+        },
+        {
+          "iteration_id": "Overall_R3_R3",
+          "params": {
+            "lot": 0.1,
+            "atr_period": 10,
+            "lookback_period": 36,
+            "entry_threshold": 2.0802925,
+            "exit_threshold": 0.4,
+            "stop_loss_atr": 1.4449999999999998,
+            "take_profit_atr": 6.0,
+            "risk_per_trade": 0.0064,
+            "commission_pct": 0.0005,
+            "slippage_pct": 0.0008,
+            "max_net_vol": 1.0,
+            "breakout_lookback": 43,
+            "max_positions": 1
+          },
+          "metrics": {
+            "net_profit": -8188199.724407233,
+            "max_drawdown": 90.22773971107596,
+            "sharpe_ratio": -0.7726366790119203,
+            "calmar_ratio": 0.0,
+            "win_rate": 0.007373422906767164,
+            "payoff_ratio": 0.2573473301832281,
+            "profit_factor": 0.0019116259257585335,
+            "trade_count": 6103,
+            "annualized_return": 0.0,
+            "volatility": 0.9556832989942355
+          },
+          "review_notes": "净利润=-8188199.72, 最大回撤=9022.8%, 夏普=-0.77, Calmar=0.00, 胜率=0.7%, 盈亏比=0.26, Profit Factor=0.00, 交易次数=6103 | 问题: 最大回撤偏高 (9022.8%); 夏普比率偏低 (-0.77); Profit Factor < 1.0 (0.00)，策略整体亏损 | 改进: 考虑调整止损宽度或入场阈值; 重新评估策略方向和参数配置; 考虑提高入场门槛或增加确认条件",
+          "problems": [
+            "最大回撤偏高 (9022.8%)",
+            "夏普比率偏低 (-0.77)",
+            "Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "胜率偏低 (0.7%)",
+            "Calmar 比率偏低 (0.00)",
+            "交易成本偏高 (183587.97)"
+          ],
+          "changes": [
+            "根据 Review 结果调整参数",
+            "→ 修复: 最大回撤偏高 (9022.8%)",
+            "→ 修复: 夏普比率偏低 (-0.77)",
+            "→ 修复: Profit Factor < 1.0 (0.00)，策略整体亏损",
+            "→ 修复: 胜率偏低 (0.7%)",
+            "→ 修复: Calmar 比率偏低 (0.00)",
+            "→ 修复: 交易成本偏高 (183587.97)"
+          ]
+        }
+      ]
+    ],
+    "best_iteration": "Overall_R1_R1"
+  }
+}

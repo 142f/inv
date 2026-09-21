@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from core.runtime import DataFeed
+from core.runtime import DataFeed, Runner
 from core.strategy.manager import build_strategy
 
 
@@ -71,6 +71,42 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(strategy._get_tick().bid, 10.0)
         self.assertIn("symbol_info", gateway.calls)
         self.assertIn("symbol_info_tick", gateway.calls)
+
+    def test_runner_batches_market_queries_per_cycle(self) -> None:
+        class Broker:
+            def __init__(self):
+                self.lock = _Lock()
+                self.order_calls = 0
+                self.position_calls = 0
+                self.tick_calls: list[str] = []
+
+            def orders_get(self):
+                self.order_calls += 1
+                return ()
+
+            def positions_get(self):
+                self.position_calls += 1
+                return ()
+
+            def symbol_info_tick(self, symbol):
+                self.tick_calls.append(symbol)
+                return SimpleNamespace(symbol=symbol)
+
+        broker = Broker()
+        runner = object.__new__(Runner)
+        runner._broker = broker
+        strategies = [
+            SimpleNamespace(symbol="XAUUSD"),
+            SimpleNamespace(symbol="XAUUSD"),
+            SimpleNamespace(symbol="BTCUSD"),
+        ]
+        runner._fetch_order_position_maps({(1, "XAUUSD"), (2, "BTCUSD")})
+        ticks = runner._fetch_ticks(strategies)
+        self.assertEqual(broker.order_calls, 1)
+        self.assertEqual(broker.position_calls, 1)
+        self.assertEqual(set(broker.tick_calls), {"XAUUSD", "BTCUSD"})
+        self.assertEqual(len(broker.tick_calls), 2)
+        self.assertEqual(set(ticks), {"XAUUSD", "BTCUSD"})
 
 
 if __name__ == "__main__":

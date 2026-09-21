@@ -205,6 +205,8 @@ class GridBacktestAdapter:
         grid_state = GridState()
         closed_m15: list[Bar] = []
         day_closes: list[float] = []
+        cached_volatility: float | None = None
+        cached_volatility_days = -1
         current_day = _time(bars[0].timestamp).date()
         current_m15: list[Bar] = []
         tick_replayed_bars = 0
@@ -249,11 +251,15 @@ class GridBacktestAdapter:
                     )
                     atr = _atr(closed_m15, self.profile.atr_period)
                     if atr is not None:
-                        vol = _ewma_daily_volatility(
-                            day_closes,
-                            self.profile.ewma_span_days,
-                            periods_per_year=self._periods_per_year,
-                        )
+                        # 日收盘序列在日内不变，避免每个 M15 桶重复扫描全部历史日线。
+                        if cached_volatility_days != len(day_closes):
+                            cached_volatility = _ewma_daily_volatility(
+                                day_closes,
+                                self.profile.ewma_span_days,
+                                periods_per_year=self._periods_per_year,
+                            )
+                            cached_volatility_days = len(day_closes)
+                        vol = cached_volatility
                         target_ratio = self.profile.max_gross_notional_equity_ratio
                         if vol is not None and vol > 1e-12:
                             target_ratio = min(target_ratio, self.profile.target_annual_volatility / vol)
@@ -545,18 +551,29 @@ class GridBacktestAdapter:
         scenario: CostScenario,
         costs: dict[str, float],
     ) -> float:
-        desired = {command.idempotency_key for command in commands if command.action is CommandAction.PLACE_LIMIT}
+        command_list = tuple(commands)
+        desired = {
+            command.idempotency_key
+            for command in command_list
+            if command.action is CommandAction.PLACE_LIMIT
+        }
         for key in tuple(pending):
             if key not in desired:
                 pending.pop(key, None)
-        for command in commands:
+
+        # 持仓在本轮协调中不变，挂单名义金额随新增指令增量累加。
+        projected_notional = self._gross_notional(positions, price)
+        projected_notional += self._pending_notional(pending.values(), price)
+        notional_cap = equity * self.profile.max_gross_notional_equity_ratio
+
+        for command in command_list:
             payload = command.payload
             if command.action is CommandAction.PLACE_LIMIT and command.idempotency_key not in pending:
                 if len(pending) >= self.profile.max_open_orders:
                     continue
                 volume = float(payload["volume"])
-                projected = self._gross_notional(positions, price) + self._pending_notional(pending.values(), price)
-                if projected + price * volume * self.instrument.contract_size > equity * self.profile.max_gross_notional_equity_ratio:
+                order_notional = price * volume * self.instrument.contract_size
+                if projected_notional + order_notional > notional_cap:
                     continue
                 pending[command.idempotency_key] = _PendingLimit(
                     key=command.idempotency_key,
@@ -566,6 +583,7 @@ class GridBacktestAdapter:
                     tp=self._symbol.ticks_to_price(int(payload["tp_ticks"])),
                     sl=self._symbol.ticks_to_price(int(payload["sl_ticks"])) if "sl_ticks" in payload else None,
                 )
+                projected_notional += order_notional
             elif command.action is CommandAction.OPEN_HEDGE:
                 volume = float(payload["volume"])
                 side = str(payload["side"])

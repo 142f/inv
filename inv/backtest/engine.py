@@ -34,6 +34,7 @@ class Position:
     entry_time: float
     stop_loss: float | None = None
     take_profit: float | None = None
+    entry_cost: float = 0.0
 
     @property
     def direction(self) -> float:
@@ -116,7 +117,11 @@ class BacktestEngine:
                 if state.position:
                     strategy.state.position = state.position.volume * state.position.direction
                     strategy.state.entry_price = state.position.entry_price
-                    strategy.state.last_signal = signal.signal_type
+                else:
+                    # 主动平仓后立即同步策略状态，避免后续 K 线仍被误判为持仓。
+                    strategy.state.position = 0.0
+                    strategy.state.entry_price = 0.0
+                strategy.state.last_signal = signal.signal_type
 
             # 第三步：检查止损/止盈
             if state.position:
@@ -148,6 +153,7 @@ class BacktestEngine:
                 self._to_timestamp(last_bar.timestamp),
                 trades, contract_size,
             )
+            equity_curve[-1] = state.cash
 
         # 计算绩效
         metrics = self._compute_metrics(equity_curve, trades, symbol_spec)
@@ -191,7 +197,7 @@ class BacktestEngine:
             state.position = Position(
                 side="long", volume=volume, entry_price=price,
                 entry_time=timestamp, stop_loss=signal.stop_loss,
-                take_profit=signal.take_profit,
+                take_profit=signal.take_profit, entry_cost=commission + slippage,
             )
 
         elif signal.signal_type == SignalType.SELL:
@@ -205,7 +211,7 @@ class BacktestEngine:
             state.position = Position(
                 side="short", volume=volume, entry_price=price,
                 entry_time=timestamp, stop_loss=signal.stop_loss,
-                take_profit=signal.take_profit,
+                take_profit=signal.take_profit, entry_cost=commission + slippage,
             )
 
         elif signal.signal_type == SignalType.CLOSE_LONG and state.position and state.position.side == "long":
@@ -233,22 +239,22 @@ class BacktestEngine:
         gross_pnl = (exit_price - pos.entry_price) * pos.direction * pos.volume * contract_size
         commission = pos.volume * exit_price * self.commission_pct * contract_size
         slippage = pos.volume * exit_price * self.slippage_pct * contract_size
-        total_cost = commission + slippage
+        exit_cost = commission + slippage
 
         state.gross_commission += commission
         state.gross_slippage += slippage
 
         # 现金调整：多头卖出收回资金，空头买回支付资金
         if pos.side == "long":
-            state.cash += pos.volume * exit_price * contract_size - total_cost
+            state.cash += pos.volume * exit_price * contract_size - exit_cost
         else:
-            state.cash -= pos.volume * exit_price * contract_size + total_cost
+            state.cash -= pos.volume * exit_price * contract_size + exit_cost
 
         trades.append(Trade(
             entry_time=pos.entry_time, exit_time=exit_time,
             side=pos.side, volume=pos.volume,
             entry_price=pos.entry_price, exit_price=exit_price,
-            gross_pnl=gross_pnl, cost=total_cost,
+            gross_pnl=gross_pnl, cost=pos.entry_cost + exit_cost,
         ))
 
     def _check_protection(
@@ -293,13 +299,8 @@ class BacktestEngine:
         """计算当前权益。"""
         if state.position is None:
             return state.cash
-        unrealized = (
-            (current_price - state.position.entry_price)
-            * state.position.direction
-            * state.position.volume
-            * contract_size
-        )
-        return state.cash + unrealized
+        market_value = current_price * state.position.volume * contract_size
+        return state.cash + state.position.direction * market_value
 
     @staticmethod
     def _to_timestamp(value: float | datetime) -> float:

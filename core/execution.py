@@ -194,8 +194,9 @@ class ExecutionService:
 
     @staticmethod
     def _native_key(request: Mapping[str, Any], strategy_id: str) -> str:
-        stable = json.dumps(dict(request), sort_keys=True, default=str, ensure_ascii=False)
-        return hashlib.sha256(f"{strategy_id}|{stable}".encode("utf-8")).hexdigest()
+        # [P-02] 用排序拼接替代 json.dumps+dict() 拷贝，减少序列化与 SHA-256 的输入构建开销
+        parts = "|".join(f"{k}={v}" for k, v in sorted(request.items()))
+        return hashlib.sha256(f"{strategy_id}|{parts}".encode("utf-8")).hexdigest()
 
     def _trim_completed(self) -> None:
         while len(self._completed) > self._max_completed:

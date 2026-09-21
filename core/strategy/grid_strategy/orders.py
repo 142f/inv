@@ -100,7 +100,6 @@ class GridOrdersMixin:
                 if (is_buy and sl >= price) or ((not is_buy) and sl <= price):
                     sl = None
             vol = self._normalize_volume(self.lot)
-            # [P-10] atr_coef / price_width / sl_str 寤惰繜鍒扮湡姝ｉ渶瑕佽緭鍑烘棩蹇楁椂鎵嶈绠?
 
             request = {
                 "action": mt5.TRADE_ACTION_PENDING,
@@ -118,14 +117,8 @@ class GridOrdersMixin:
 
             if self._action_collector is not None:
                 self._queue_action(request)
-                _pw = max(12, self.digits + 9)
-                _ac = (self.step / self.base_step) if (self.use_atr and self.base_step) else 1.0
-                _sl = f"{sl:>{_pw}.{self.digits}f}" if sl is not None else f"{'--':>{_pw}}"
-                Logger.log(
-                    self.symbol,
-                    "ORDER_SENT",
-                    f"{label} LIMIT | Price={price:>{_pw}.{self.digits}f} TP={tp:>{_pw}.{self.digits}f} SL={_sl} | Magic={self.magic:04d} | ATR={_ac:.2f}x (queued)",
-                )
+                Logger.log(self.symbol, "ORDER_SENT",
+                    self._fmt_order_log(label, price, tp, sl) + " (queued)")
                 return True
 
             result = self._send_with_fillings(request)
@@ -136,8 +129,8 @@ class GridOrdersMixin:
 
             if result.retcode not in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
                 if result.retcode == 10004:  # REQUOTE
-                    # [淇 L-11] 閲嶈瘯鍓嶅埛鏂?tick 骞舵牎楠屼环鏍间粛涓庡競鍦轰繚鎸佸悎娉曡窛绂伙紝
-                    # 閬垮厤鍦ㄥ墽鐑堣鎯呬笅鐢ㄦ棫浠锋牸鍙嶅 requote銆?
+                    # [修复 L-11] 重试前刷新 tick 并校验价格仍与市场保持合法距离，
+                    # 避免在剧烈行情下用旧价格反复 requote。
                     fresh_tick = self._get_tick()
                     if fresh_tick is None or fresh_tick.bid <= 0:
                         Logger.log(self.symbol, "WARN", "No valid tick after requote; skip order")
@@ -162,34 +155,33 @@ class GridOrdersMixin:
                         return None
                     if result.retcode in [mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED]:
                         self._on_order_submit_success()
-                        _pw = max(12, self.digits + 9)
-                        _ac = (self.step / self.base_step) if (self.use_atr and self.base_step) else 1.0
-                        _sl = f"{sl:>{_pw}.{self.digits}f}" if sl is not None else f"{'--':>{_pw}}"
-                        Logger.log(
-                            self.symbol,
-                            "ORDER_SENT",
-                            f"{label} LIMIT | Price={price:>{_pw}.{self.digits}f} TP={tp:>{_pw}.{self.digits}f} SL={_sl} | Magic={self.magic:04d} | ATR={_ac:.2f}x (retry)",
-                        )
+                        Logger.log(self.symbol, "ORDER_SENT",
+                            self._fmt_order_log(label, price, tp, sl) + " (retry)")
                         return result.order
 
                 self._handle_order_error(result.retcode, getattr(result, "comment", ""), price)
                 return None
 
             self._on_order_submit_success()
-            _pw = max(12, self.digits + 9)
-            _ac = (self.step / self.base_step) if (self.use_atr and self.base_step) else 1.0
-            _sl = f"{sl:>{_pw}.{self.digits}f}" if sl is not None else f"{'--':>{_pw}}"
-            Logger.log(
-                self.symbol,
-                "ORDER_SENT",
-                f"{label} LIMIT | Price={price:>{_pw}.{self.digits}f} TP={tp:>{_pw}.{self.digits}f} SL={_sl} | Magic={self.magic:04d} | ATR={_ac:.2f}x",
-            )
+            Logger.log(self.symbol, "ORDER_SENT",
+                self._fmt_order_log(label, price, tp, sl))
             return result.order
 
         except Exception as exc:
             Logger.log(self.symbol, "EXCEPTION", f"order exception: {exc}")
             self.pause_until = max(self.pause_until, time.time() + 2)
             return None
+
+    def _fmt_order_log(self, label: str, price: float, tp: float, sl: float | None) -> str:
+        """统一构建下单日志文本，消除三处重复的格式化逻辑。"""
+        _pw = max(12, self.digits + 9)
+        _ac = (self.step / self.base_step) if (self.use_atr and self.base_step) else 1.0
+        _sl = f"{sl:>{_pw}.{self.digits}f}" if sl is not None else f"{'--':>{_pw}}"
+        return (
+            f"{label} LIMIT | Price={price:>{_pw}.{self.digits}f} "
+            f"TP={tp:>{_pw}.{self.digits}f} SL={_sl} | "
+            f"Magic={self.magic:04d} | ATR={_ac:.2f}x"
+        )
 
     def _place_buy_order(self, price):
         return self._place_limit_order("buy", price)
@@ -387,7 +379,7 @@ class GridOrdersMixin:
         Returns:
             tuple: (long_vol, short_vol, pending_buy_vol, pending_sell_vol, net_vol)
         """
-        # [P-03] 鍗曟閬嶅巻鍚屾椂绱鎵€鏈夌淮搴︼紝鏇夸唬鍘熸潵 4 娆＄嫭绔嬬敓鎴愬櫒閬嶅巻
+        # [P-03] 鍗曟閬嶅巻鍚屾椂绱鎵€鏈夌淮搴︼紝鏇夸唬鍘熸潵 4 娆＄绔嬬敓鎴愬櫒閬嶅巻
         long_vol = 0.0
         short_vol = 0.0
         for p in my_positions:
@@ -397,7 +389,7 @@ class GridOrdersMixin:
                 short_vol += p.volume
 
         # 鎸傚崟閲忚绠?- 浣跨敤 volume_current锛堝綋鍓嶅墿浣欓噺锛夎€岄潪 volume_initial锛堝垵濮嬮噺锛?
-        # 鍥犱负閮ㄥ垎鎴愪氦鐨勮鍗曞簲璇ュ彧璁＄畻鍓╀綑閮ㄥ垎
+        # 鍥犱负閮ㄥ垎鎴愪氦鐨勮鍗曞簲璇ュ彧璁＄畻鍓╀綑閮ㄥバー
         pending_buy_vol = 0.0
         pending_sell_vol = 0.0
         for o in my_orders:

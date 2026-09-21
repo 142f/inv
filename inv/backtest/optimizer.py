@@ -8,9 +8,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from itertools import product
-from math import isnan
 from random import Random
 from typing import Any, Callable, Sequence
 
@@ -78,11 +77,22 @@ class ParameterGrid:
 
     def sample(self, n: int, seed: int = 42) -> list[dict[str, Any]]:
         """随机采样 n 组参数。"""
-        all_combos = self.all_params()
-        if n >= len(all_combos):
-            return all_combos
+        total = self.total_combinations
+        if n >= total:
+            return self.all_params()
         rng = Random(seed)
-        return rng.sample(all_combos, n)
+        keys = tuple(self._expanded)
+        value_lists = tuple(self._expanded[key] for key in keys)
+        results: list[dict[str, Any]] = []
+        for flat_index in rng.sample(range(total), n):
+            values: list[Any] = [None] * len(keys)
+            remainder = flat_index
+            for index in range(len(keys) - 1, -1, -1):
+                choices = value_lists[index]
+                remainder, choice_index = divmod(remainder, len(choices))
+                values[index] = choices[choice_index]
+            results.append(dict(zip(keys, values)))
+        return results
 
 
 class ParameterOptimizer:
@@ -139,6 +149,11 @@ class ParameterOptimizer:
 
         return score
 
+    @staticmethod
+    def _default_settings(strategy: BaseStrategy) -> StrategySettings:
+        """为未提供 settings_factory 的调用构造有效的兼容配置。"""
+        return StrategySettings(symbol=strategy.symbol, magic=0)
+
     def run(
         self,
         bars: Sequence[Bar],
@@ -176,7 +191,7 @@ class ParameterOptimizer:
             settings = (
                 self.settings_factory(params)
                 if self.settings_factory
-                else StrategySettings()
+                else self._default_settings(strategy)
             )
             result = self.engine.run(strategy, bars, settings, symbol_spec)
             score = self.scoring_fn(result)
@@ -221,6 +236,8 @@ class WalkForwardOptimizer:
         self.window_size = int(window_size)
         self.test_size = int(test_size)
         self.step_size = int(step_size)
+        if self.window_size <= 0 or self.test_size <= 0 or self.step_size <= 0:
+            raise ValueError("Walk-Forward 窗口和步长必须为正整数")
 
     def windows(self, total_bars: int) -> list[WalkForwardWindow]:
         """生成滚动窗口索引列表。"""
@@ -282,7 +299,7 @@ class WalkForwardOptimizer:
                 settings = (
                     self.optimizer.settings_factory(best.params)
                     if self.optimizer.settings_factory
-                    else StrategySettings()
+                    else self.optimizer._default_settings(strategy)
                 )
                 test_result = self.optimizer.engine.run(
                     strategy, test_bars, settings, symbol_spec

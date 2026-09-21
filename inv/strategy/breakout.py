@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Sequence
 
 import numpy as np
@@ -38,16 +37,21 @@ class BreakoutStrategy(BaseStrategy):
     ) -> Sequence[Signal]:
         lookback = settings.breakout_lookback
         if current_index < lookback + settings.breakout_confirmation_bars:
-            return self._hold_signal(bars, current_index)
+            return self._hold_signal(bars, current_index, "breakout")
 
         # 仅使用已闭合的 K 线数据
         tail = bars[max(0, current_index - lookback + 1) : current_index + 1]
         if len(tail) < lookback:
-            return self._hold_signal(bars, current_index)
+            return self._hold_signal(bars, current_index, "breakout")
 
         highs = np.array([float(b.high) for b in tail])
         lows = np.array([float(b.low) for b in tail])
-        closes = np.array([float(b.close) for b in bars[: current_index + 1]], dtype=np.float64)
+        confirmation = settings.breakout_confirmation_bars
+        close_start = max(0, current_index - lookback - confirmation + 1)
+        closes = np.fromiter(
+            (float(b.close) for b in bars[close_start : current_index + 1]),
+            dtype=np.float64,
+        )
 
         channel_high = float(np.max(highs))
         channel_low = float(np.min(lows))
@@ -59,7 +63,6 @@ class BreakoutStrategy(BaseStrategy):
         atr_value = atr or (channel_high - channel_low) * 0.1
 
         # 确认突破：连续 confirmation_bars 根收盘价在通道外
-        confirmation = settings.breakout_confirmation_bars
         confirmed_breakout_up = self._check_confirmation(
             closes, lookback, confirmation, direction="up"
         )
@@ -128,7 +131,7 @@ class BreakoutStrategy(BaseStrategy):
                 )
             ]
 
-        return self._hold_signal(bars, current_index)
+        return self._hold_signal(bars, current_index, "breakout")
 
     def _check_confirmation(
         self,
@@ -154,40 +157,3 @@ class BreakoutStrategy(BaseStrategy):
         else:
             return all(c < channel_low for c in confirm_slice)
 
-    def _calc_atr(
-        self, bars: Sequence[Bar], current_index: int, period: int
-    ) -> float | None:
-        if current_index < period + 1:
-            return None
-        start = max(0, current_index - period - 1)
-        tail = bars[start : current_index + 1]
-        if len(tail) < period + 1:
-            return None
-        true_ranges = []
-        for prev, curr in zip(tail, tail[1:]):
-            tr = max(
-                curr.high - curr.low,
-                abs(curr.high - prev.close),
-                abs(curr.low - prev.close),
-            )
-            true_ranges.append(tr)
-        return sum(true_ranges[-period:]) / period if true_ranges else None
-
-    def _hold_signal(
-        self, bars: Sequence[Bar], current_index: int
-    ) -> list[Signal]:
-        return [
-            Signal(
-                timestamp=self._get_timestamp(bars, current_index),
-                symbol=self.symbol,
-                signal_type=SignalType.HOLD,
-                metadata={"strategy": "breakout"},
-            )
-        ]
-
-    @staticmethod
-    def _get_timestamp(bars: Sequence[Bar], current_index: int) -> datetime:
-        ts = bars[min(current_index, len(bars) - 1)].timestamp
-        if isinstance(ts, datetime):
-            return ts
-        return datetime.fromtimestamp(float(ts), tz=timezone.utc)

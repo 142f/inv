@@ -327,6 +327,16 @@ class StrategyUpdater:
             fee_slippage_cost=getattr(strategy, "utility_fee_slippage_cost", 0.0),
         )
 
+    @staticmethod
+    def _apply_risk_snapshot(strategy: GridStrategy, cfg: dict) -> None:
+        """热更新时将配置中的风控/实盘参数同步到策略实例。"""
+        settings = StrategySettings.from_legacy(cfg)
+        strategy.settings = settings
+        strategy.risk_settings = settings.risk
+        gateway = getattr(strategy, "gateway", None)
+        configure = getattr(gateway, "set_strategy_permission", None)
+        if configure is not None:
+            configure(settings.strategy_id, settings.risk.can_trade_live)
 
 # ── 策略管理器 (Strategy Manager) ──────────────────────────────────────────────
 
@@ -500,16 +510,6 @@ class StrategyManager:
         self._persist_strategy_state(strategy)
         return True
 
-    @staticmethod
-    def _apply_risk_snapshot(strategy: GridStrategy, cfg: dict) -> None:
-        settings = StrategySettings.from_legacy(cfg)
-        strategy.settings = settings
-        strategy.risk_settings = settings.risk
-        gateway = getattr(strategy, "gateway", None)
-        configure = getattr(gateway, "set_strategy_permission", None)
-        if configure is not None:
-            configure(settings.strategy_id, settings.risk.can_trade_live)
-
     def _remove_strategy(self, magic: int):
         strategy = self.active.pop(magic, None)
         if not strategy:
@@ -601,6 +601,9 @@ class StrategyManager:
     def _persist_strategy_state(self, strategy: GridStrategy) -> None:
         try:
             self.state_repository.set(self._state_key(strategy.magic), strategy.get_state())
+            flush = getattr(self.state_repository, "flush", None)
+            if flush is not None:
+                flush()
         except Exception as exc:
             Logger.log(strategy.symbol, "WARN", f"保存策略运行状态失败: {exc}")
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import tempfile
@@ -32,7 +33,9 @@ class FileStateRepository:
             self.path = Path(__file__).resolve().parents[2] / self.path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._states: Dict[str, Dict[str, Any]] = {}
+        self._dirty = False
         self._load()
+        atexit.register(self.flush)
 
     def get(self, key: str) -> Dict[str, Any] | None:
         state = self._states.get(str(key))
@@ -40,12 +43,19 @@ class FileStateRepository:
 
     def set(self, key: str, state: Dict[str, Any]) -> None:
         self._states[str(key)] = self._to_json_safe(dict(state))
-        self._save()
+        self._dirty = True
 
     def delete(self, key: str) -> None:
         if str(key) in self._states:
             self._states.pop(str(key), None)
-            self._save()
+            self._dirty = True
+
+    def flush(self) -> None:
+        """仅在状态有变更时落盘，合并高频 set 的写入开销。"""
+        if not self._dirty:
+            return
+        self._save()
+        self._dirty = False
 
     def _load(self) -> None:
         if not self.path.exists():

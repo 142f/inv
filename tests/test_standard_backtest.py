@@ -21,6 +21,8 @@ from core.research import (
 from core.research.symbols import resolve_broker_symbol
 from core.research.comparison import InsufficientHistoryError
 from core.research.reporting import ReviewWindow
+from inv.backtest.engine import BacktestEngine, Position, _ExecutionState
+from inv.backtest.optimizer import ParameterGrid
 
 
 UTC = timezone.utc
@@ -198,6 +200,40 @@ class StandardBacktestTests(unittest.TestCase):
         self_spec = self.spec
         with self.assertRaises(InsufficientHistoryError):
             StandardComparisonRunner(Provider()).run(request_tick_review=False)
+
+    def test_backtest_mark_to_market_matches_cash_accounting(self) -> None:
+        engine = BacktestEngine()
+        long_state = _ExecutionState(
+            cash=90_000.0,
+            position=Position("long", 1.0, 100.0, 0.0),
+        )
+        short_state = _ExecutionState(
+            cash=110_000.0,
+            position=Position("short", 1.0, 100.0, 0.0),
+        )
+        self.assertEqual(engine._mark_to_market(long_state, 110.0, 100.0), 101_000.0)
+        self.assertEqual(engine._mark_to_market(short_state, 90.0, 100.0), 101_000.0)
+
+    def test_trade_cost_includes_entry_and_exit_costs(self) -> None:
+        from inv.domain.models import Signal, SignalType
+
+        engine = BacktestEngine(commission_pct=0.01, slippage_pct=0.01)
+        state = _ExecutionState(cash=100_000.0)
+        trades = []
+        signal = Signal(
+            datetime(2024, 1, 1, tzinfo=UTC), "TEST", SignalType.BUY,
+            price=100.0, volume=1.0,
+        )
+        engine._execute_signal(state, signal, 100.0, 1.0, trades, 1.0)
+        engine._force_close(state, 110.0, 2.0, trades, 1.0)
+        self.assertAlmostEqual(trades[0].cost, 4.2)
+
+    def test_random_parameter_sample_does_not_materialize_full_grid(self) -> None:
+        grid = ParameterGrid({"a": list(range(10_000)), "b": list(range(10_000))})
+        grid.all_params = lambda: self.fail("随机采样不应物化完整笛卡尔积")
+        sampled = grid.sample(20, seed=7)
+        self.assertEqual(len(sampled), 20)
+        self.assertEqual(len({(item["a"], item["b"]) for item in sampled}), 20)
 
 
 if __name__ == "__main__":

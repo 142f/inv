@@ -82,6 +82,52 @@ class BaseStrategy(ABC):
         self.state.reset()
         self._cache.clear()
 
+    @staticmethod
+    def _get_timestamp(bars: Sequence[Bar], current_index: int) -> datetime:
+        """返回当前 K 线的 UTC 时间，并兼容空序列。"""
+        if not bars:
+            return datetime.now(timezone.utc)
+        ts = bars[min(max(0, current_index), len(bars) - 1)].timestamp
+        if isinstance(ts, datetime):
+            return ts
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc)
+
+    def _hold_signal(
+        self,
+        bars: Sequence[Bar],
+        current_index: int,
+        strategy_name: str,
+    ) -> list[Signal]:
+        """生成格式一致的空仓信号。"""
+        return [
+            Signal(
+                timestamp=self._get_timestamp(bars, current_index),
+                symbol=self.symbol,
+                signal_type=SignalType.HOLD,
+                metadata={"strategy": strategy_name},
+            )
+        ]
+
+    @staticmethod
+    def _calc_atr(
+        bars: Sequence[Bar], current_index: int, period: int
+    ) -> float | None:
+        """仅扫描计算 ATR 所需的有界窗口。"""
+        if period <= 0 or current_index < period + 1:
+            return None
+        start = current_index - period
+        tail = bars[start : current_index + 1]
+        if len(tail) < period + 1:
+            return None
+        true_range_sum = 0.0
+        for prev, curr in zip(tail, tail[1:]):
+            true_range_sum += max(
+                curr.high - curr.low,
+                abs(curr.high - prev.close),
+                abs(curr.low - prev.close),
+            )
+        return true_range_sum / period
+
     def calculate_position_size(
         self,
         price: float,
@@ -126,10 +172,7 @@ class CompositeStrategy(BaseStrategy):
 
     def _resolve_timestamp(self, bars: Sequence[Bar]) -> datetime:
         """从 K 线序列中解析出当前时间戳。"""
-        ts = bars[-1].timestamp if bars else datetime.now(timezone.utc)
-        if isinstance(ts, datetime):
-            return ts
-        return datetime.fromtimestamp(float(ts), tz=timezone.utc)
+        return self._get_timestamp(bars, len(bars) - 1)
 
     def compute_signals(
         self,

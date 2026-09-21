@@ -1,0 +1,558 @@
+{
+  "xau": [
+    [
+      {
+        "id": "Overall_R1_R1",
+        "params": {
+          "bb_period": 20,
+          "entry_std": 1.0,
+          "atr_period": 14,
+          "stop_loss_atr": 2.0,
+          "take_profit_atr": 3.0
+        },
+        "metrics": {
+          "id": "Overall_R1_R1",
+          "net_profit": -31724.32,
+          "annual_return": -202.11,
+          "max_drawdown": 31.75,
+          "sharpe": -42.399,
+          "calmar": -6.366,
+          "win_rate": 16.2,
+          "payoff": 0.067,
+          "profit_factor": 0.013,
+          "trades": 450,
+          "long_pnl": -15091.48,
+          "short_pnl": -16632.84,
+          "commission": 23075.19
+        },
+        "problems": [
+          "最大回撤 31.7%",
+          "夏普比率偏低 (-42.40)",
+          "Profit Factor < 1 (0.01)",
+          "胜率偏低 (16.2%)",
+          "交易成本过高 (23075.19)",
+          "Calmar 比率偏低 (-6.37)"
+        ],
+        "changes": []
+      },
+      {
+        "id": "Overall_R1_R2",
+        "params": {
+          "bb_period": 20,
+          "entry_std": 1.1,
+          "atr_period": 14,
+          "stop_loss_atr": 1.7,
+          "take_profit_atr": 3.6
+        },
+        "metrics": {
+          "id": "Overall_R1_R2",
+          "net_profit": -30601.0,
+          "annual_return": -194.96,
+          "max_drawdown": 30.63,
+          "sharpe": -41.765,
+          "calmar": -6.364,
+          "win_rate": 22.6,
+          "payoff": 0.154,
+          "profit_factor": 0.045,
+          "trades": 438,
+          "long_pnl": -14226.27,
+          "short_pnl": -16374.73,
+          "commission": 22448.58
+        },
+        "problems": [
+          "最大回撤 30.6%",
+          "夏普比率偏低 (-41.77)",
+          "Profit Factor < 1 (0.05)",
+          "胜率偏低 (22.6%)",
+          "交易成本过高 (22448.58)",
+          "Calmar 比率偏低 (-6.36)"
+        ],
+        "changes": []
+      },
+      {
+        "id": "Overall_R1_R3",
+        "params": {
+          "bb_period": 20,
+          "entry_std": 1.21,
+          "atr_period": 14,
+          "stop_loss_atr": 1.445,
+          "take_profit_atr": 4.32
+        },
+        "metrics": {
+          "id": "Overall_R1_R3",
+          "net_profit": -29404.4,
+          "annual_return": -187.33,
+          "max_drawdown": 29.44,
+          "sharpe": -40.263,
+          "calmar": -6.364,
+          "win_rate": 20.3,
+          "payoff": 0.317,
+          "profit_factor": 0.081,
+          "trades": 443,
+          "long_pnl": -13839.12,
+          "short_pnl": -15565.29,
+          "commission": 22707.81
+        },
+        "problems": [
+          "最大回撤 29.4%",
+          "夏普比率偏低 (-40.26)",
+          "Profit Factor < 1 (0.08)",
+          "胜率偏低 (20.3%)",
+          "交易成本过高 (22707.81)",
+          "Calmar 比率偏低 (-6.36)"
+        ],
+        "changes": []
+      }
+    ],
+    [
+      {
+        "id": "Overall_R2_R1",
+        "params": {
+          "bb_period": 18,
+          "entry_std": 1.2,
+          "atr_period": 12,
+          "stop_loss_atr": 1.8,
+          "take_profit_atr": 3.5
+        },
+        "metrics": {
+          "id": "Overall_R2_R1",
+          "net_profit": -29331.4,
+          "annual_return": -186.87,
+          "max_drawdown": 29.36,
+          "sharpe": -40.699,
+          "calmar": -6.364,
+          "win_rate": 24.1,
+          "payoff": 0.149,
+          "profit_factor": 0.047,
+          "trades": 432,
+          "long_pnl": -14178.53,
+          "short_pnl": -15152.87,
+          "commission": 22141.26
+        },
+        "problems": [
+          "最大回撤 29.4%",
+          "夏普比率偏低 (-40.70)",
+          "Profit Factor < 1 (0.05)",
+          "胜率偏低 (24.1%)",
+          "交易成本过高 (22141.26)",
+          "Calmar 比率偏低 (-6.36)"
+        ],
+        "changes": []
+      },
+      {
+        "id": "Overall_R2_R2",
+        "params": {
+          "bb_period": 18,
+          "entry_std": 1.32,
+          "atr_period": 12,
+          "stop_loss_atr": 1.53,
+          "take_profit_atr": 4.2
+        },
+        "metrics": {
+          "id": "Overall_R2_R2",
+          "net_profit": -26830.27,
+          "annual_return": -170.93,
+          "max_drawdown": 26.86,
+          "sharpe": -38.411,
+          "calmar": -6.363,
+          "win_rate": 23.6,
+          "payoff": 0.277,
+          "profit_factor": 0.086,
+          "trades": 415,
+          "long_pnl": -12994.43,
+          "short_pnl": -13835.85,
+          "commission": 21271.77
+        },
+        "problems": [
+          "最大回撤 26.9%",
+          "夏普比率偏低 (-38.41)",
+          "Profit Factor < 1 (0.09)",
+          "胜率偏低 (23.6%)",
+          "交易成本过高 (21271.77)",
+          "Calmar 比率偏低 (-6.36)"
+        ],
+        "changes": []
+      },
+      {
+        "id": "Overall_R2_R3",
+        "params": {
+          "bb_period": 18,
+          "entry_std": 1.452,
+          "atr_period": 12,
+          "stop_loss_atr": 1.3005,
+          "take_profit_atr": 5.04
+        },
+        "metrics": {
+          "id": "Overall_R2_R3",
+          "net_profit": -24844.15,
+          "annual_return": -158.28,
+          "max_drawdown": 24.92,
+          "sharpe": -36.96,
+          "calmar": -6.351,
+          "win_rate": 16.4,
+          "payoff": 0.53,
+          "profit_factor": 0.104,
+          "trades": 377,
+          "long_pnl": -12633.67,
+          "short_pnl": -12210.47,
+          "commission": 19339.41
+        },
+        "problems": [
+          "最大回撤 24.9%",
+          "夏普比率偏低 (-36.96)",
+          "Profit Factor < 1 (0.10)",
+          "胜率偏低 (16.4%)",
+          "交易成本过高 (19339.41)",
+          "Calmar 比率偏低 (-6.35)"
+        ],
+        "changes": []
+      }
+    ],
+    [
+      {
+        "id": "Overall_R3_R1",
+        "params": {
+          "bb_period": 15,
+          "entry_std": 1.5,
+          "atr_period": 10,
+          "stop_loss_atr": 1.5,
+          "take_profit_atr": 4.0
+        },
+        "metrics": {
+          "id": "Overall_R3_R1",
+          "net_profit": -28902.16,
+          "annual_return": -184.13,
+          "max_drawdown": 28.9,
+          "sharpe": -41.48,
+          "calmar": -6.371,
+          "win_rate": 21.8,
+          "payoff": 0.268,
+          "profit_factor": 0.075,
+          "trades": 440,
+          "long_pnl": -13106.77,
+          "short_pnl": -15795.39,
+          "commission": 22557.55
+        },
+        "problems": [
+          "最大回撤 28.9%",
+          "夏普比率偏低 (-41.48)",
+          "Profit Factor < 1 (0.07)",
+          "胜率偏低 (21.8%)",
+          "交易成本过高 (22557.55)",
+          "Calmar 比率偏低 (-6.37)"
+        ],
+        "changes": []
+      },
+      {
+        "id": "Overall_R3_R2",
+        "params": {
+          "bb_period": 15,
+          "entry_std": 1.65,
+          "atr_period": 10,
+          "stop_loss_atr": 1.275,
+          "take_profit_atr": 4.8
+        },
+        "metrics": {
+          "id": "Overall_R3_R2",
+          "net_profit": -22659.64,
+          "annual_return": -144.36,
+          "max_drawdown": 22.66,
+          "sharpe": -35.849,
+          "calmar": -6.371,
+          "win_rate": 19.6,
+          "payoff": 0.455,
+          "profit_factor": 0.111,
+          "trades": 362,
+          "long_pnl": -10787.31,
+          "short_pnl": -11872.32,
+          "commission": 18551.27
+        },
+        "problems": [
+          "最大回撤 22.7%",
+          "夏普比率偏低 (-35.85)",
+          "Profit Factor < 1 (0.11)",
+          "胜率偏低 (19.6%)",
+          "交易成本过高 (18551.27)",
+          "Calmar 比率偏低 (-6.37)"
+        ],
+        "changes": []
+      },
+      {
+        "id": "Overall_R3_R3",
+        "params": {
+          "bb_period": 15,
+          "entry_std": 1.815,
+          "atr_period": 10,
+          "stop_loss_atr": 1.0837,
+          "take_profit_atr": 5.76
+        },
+        "metrics": {
+          "id": "Overall_R3_R3",
+          "net_profit": -17495.21,
+          "annual_return": -111.46,
+          "max_drawdown": 17.5,
+          "sharpe": -30.1,
+          "calmar": -6.371,
+          "win_rate": 16.7,
+          "payoff": 0.741,
+          "profit_factor": 0.148,
+          "trades": 294,
+          "long_pnl": -8258.03,
+          "short_pnl": -9237.18,
+          "commission": 15064.1
+        },
+        "problems": [
+          "最大回撤 17.5%",
+          "夏普比率偏低 (-30.10)",
+          "Profit Factor < 1 (0.15)",
+          "胜率偏低 (16.7%)",
+          "交易成本过高 (15064.10)",
+          "Calmar 比率偏低 (-6.37)"
+        ],
+        "changes": []
+      }
+    ]
+  ],
+  "btc": [
+    [
+      {
+        "id": "Overall_R1_R1",
+        "params": {
+          "lookback": 15,
+          "atr_period": 14,
+          "stop_loss_atr": 2.5,
+          "take_profit_atr": 4.0
+        },
+        "metrics": {
+          "id": "Overall_R1_R1",
+          "net_profit": 1474.68,
+          "annual_return": 9.4,
+          "max_drawdown": 2.31,
+          "sharpe": 1.711,
+          "calmar": 4.065,
+          "win_rate": 44.8,
+          "payoff": 1.407,
+          "profit_factor": 1.141,
+          "trades": 96,
+          "long_pnl": 1165.42,
+          "short_pnl": 309.26,
+          "commission": 404.93
+        },
+        "problems": [],
+        "changes": []
+      },
+      {
+        "id": "Overall_R1_R2",
+        "params": {
+          "lookback": 15,
+          "atr_period": 14,
+          "stop_loss_atr": 2.5,
+          "take_profit_atr": 4.0
+        },
+        "metrics": {
+          "id": "Overall_R1_R2",
+          "net_profit": 1474.68,
+          "annual_return": 9.4,
+          "max_drawdown": 2.31,
+          "sharpe": 1.711,
+          "calmar": 4.065,
+          "win_rate": 44.8,
+          "payoff": 1.407,
+          "profit_factor": 1.141,
+          "trades": 96,
+          "long_pnl": 1165.42,
+          "short_pnl": 309.26,
+          "commission": 404.93
+        },
+        "problems": [],
+        "changes": []
+      },
+      {
+        "id": "Overall_R1_R3",
+        "params": {
+          "lookback": 15,
+          "atr_period": 14,
+          "stop_loss_atr": 2.5,
+          "take_profit_atr": 4.0
+        },
+        "metrics": {
+          "id": "Overall_R1_R3",
+          "net_profit": 1474.68,
+          "annual_return": 9.4,
+          "max_drawdown": 2.31,
+          "sharpe": 1.711,
+          "calmar": 4.065,
+          "win_rate": 44.8,
+          "payoff": 1.407,
+          "profit_factor": 1.141,
+          "trades": 96,
+          "long_pnl": 1165.42,
+          "short_pnl": 309.26,
+          "commission": 404.93
+        },
+        "problems": [],
+        "changes": []
+      }
+    ],
+    [
+      {
+        "id": "Overall_R2_R1",
+        "params": {
+          "lookback": 12,
+          "atr_period": 12,
+          "stop_loss_atr": 2.0,
+          "take_profit_atr": 5.0
+        },
+        "metrics": {
+          "id": "Overall_R2_R1",
+          "net_profit": 2530.1,
+          "annual_return": 16.12,
+          "max_drawdown": 1.57,
+          "sharpe": 2.823,
+          "calmar": 10.294,
+          "win_rate": 36.6,
+          "payoff": 2.222,
+          "profit_factor": 1.28,
+          "trades": 93,
+          "long_pnl": 1038.82,
+          "short_pnl": 1491.28,
+          "commission": 391.48
+        },
+        "problems": [],
+        "changes": []
+      },
+      {
+        "id": "Overall_R2_R2",
+        "params": {
+          "lookback": 12,
+          "atr_period": 12,
+          "stop_loss_atr": 2.0,
+          "take_profit_atr": 5.0
+        },
+        "metrics": {
+          "id": "Overall_R2_R2",
+          "net_profit": 2530.1,
+          "annual_return": 16.12,
+          "max_drawdown": 1.57,
+          "sharpe": 2.823,
+          "calmar": 10.294,
+          "win_rate": 36.6,
+          "payoff": 2.222,
+          "profit_factor": 1.28,
+          "trades": 93,
+          "long_pnl": 1038.82,
+          "short_pnl": 1491.28,
+          "commission": 391.48
+        },
+        "problems": [],
+        "changes": []
+      },
+      {
+        "id": "Overall_R2_R3",
+        "params": {
+          "lookback": 12,
+          "atr_period": 12,
+          "stop_loss_atr": 2.0,
+          "take_profit_atr": 5.0
+        },
+        "metrics": {
+          "id": "Overall_R2_R3",
+          "net_profit": 2530.1,
+          "annual_return": 16.12,
+          "max_drawdown": 1.57,
+          "sharpe": 2.823,
+          "calmar": 10.294,
+          "win_rate": 36.6,
+          "payoff": 2.222,
+          "profit_factor": 1.28,
+          "trades": 93,
+          "long_pnl": 1038.82,
+          "short_pnl": 1491.28,
+          "commission": 391.48
+        },
+        "problems": [],
+        "changes": []
+      }
+    ],
+    [
+      {
+        "id": "Overall_R3_R1",
+        "params": {
+          "lookback": 10,
+          "atr_period": 10,
+          "stop_loss_atr": 1.8,
+          "take_profit_atr": 5.5
+        },
+        "metrics": {
+          "id": "Overall_R3_R1",
+          "net_profit": 995.54,
+          "annual_return": 6.34,
+          "max_drawdown": 1.74,
+          "sharpe": 1.116,
+          "calmar": 3.642,
+          "win_rate": 29.2,
+          "payoff": 2.695,
+          "profit_factor": 1.112,
+          "trades": 89,
+          "long_pnl": 224.71,
+          "short_pnl": 770.83,
+          "commission": 375.46
+        },
+        "problems": [],
+        "changes": []
+      },
+      {
+        "id": "Overall_R3_R2",
+        "params": {
+          "lookback": 10,
+          "atr_period": 10,
+          "stop_loss_atr": 1.8,
+          "take_profit_atr": 5.5
+        },
+        "metrics": {
+          "id": "Overall_R3_R2",
+          "net_profit": 995.54,
+          "annual_return": 6.34,
+          "max_drawdown": 1.74,
+          "sharpe": 1.116,
+          "calmar": 3.642,
+          "win_rate": 29.2,
+          "payoff": 2.695,
+          "profit_factor": 1.112,
+          "trades": 89,
+          "long_pnl": 224.71,
+          "short_pnl": 770.83,
+          "commission": 375.46
+        },
+        "problems": [],
+        "changes": []
+      },
+      {
+        "id": "Overall_R3_R3",
+        "params": {
+          "lookback": 10,
+          "atr_period": 10,
+          "stop_loss_atr": 1.8,
+          "take_profit_atr": 5.5
+        },
+        "metrics": {
+          "id": "Overall_R3_R3",
+          "net_profit": 995.54,
+          "annual_return": 6.34,
+          "max_drawdown": 1.74,
+          "sharpe": 1.116,
+          "calmar": 3.642,
+          "win_rate": 29.2,
+          "payoff": 2.695,
+          "profit_factor": 1.112,
+          "trades": 89,
+          "long_pnl": 224.71,
+          "short_pnl": 770.83,
+          "commission": 375.46
+        },
+        "problems": [],
+        "changes": []
+      }
+    ]
+  ]
+}

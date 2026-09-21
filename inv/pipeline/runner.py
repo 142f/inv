@@ -64,6 +64,9 @@ class PipelineRunner:
         返回:
             最后一个阶段的输出
         """
+        if not self._stages:
+            raise ValueError("Pipeline 至少需要一个执行阶段")
+
         current_input = initial_input
 
         for stage in self._stages:
