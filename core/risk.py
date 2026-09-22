@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from math import isfinite
 from typing import Any, Iterable, Mapping
 
 from core.domain import RiskDecision, RiskSettings
@@ -58,6 +59,8 @@ class RiskCoordinator:
         reasons: list[str] = []
         state = self._states.setdefault(snapshot.strategy_id, _RiskState())
         equity = self._positive_or_none(snapshot.equity)
+        if equity is None:
+            reasons.append("账户权益缺失或无效")
         today = date.fromtimestamp(snapshot.now)
 
         if equity is not None:
@@ -71,7 +74,7 @@ class RiskCoordinator:
             if age > settings.max_tick_age_seconds:
                 reasons.append("行情时间戳过期")
 
-        if snapshot.bid is None or snapshot.ask is None or snapshot.bid <= 0 or snapshot.ask < snapshot.bid:
+        if snapshot.bid is None or snapshot.ask is None or not isfinite(snapshot.bid) or not isfinite(snapshot.ask) or snapshot.bid <= 0 or snapshot.ask < snapshot.bid:
             reasons.append("行情报价无效")
         elif settings.max_spread_points is not None:
             # 此处以价格点为单位；接入层应将 point 换算后的阈值放入配置。
@@ -82,8 +85,9 @@ class RiskCoordinator:
             if float(snapshot.margin_level) < settings.min_margin_level:
                 reasons.append("保证金水平低于阈值")
 
+        orders = tuple(snapshot.orders)
         long_volume, short_volume = self._position_exposure(snapshot.positions)
-        pending_long, pending_short = self._order_exposure(snapshot.orders)
+        pending_long, pending_short = self._order_exposure(orders)
         long_volume += pending_long
         short_volume += pending_short
         gross_volume = long_volume + short_volume
@@ -97,7 +101,7 @@ class RiskCoordinator:
             notional = gross_volume * reference_price * max(float(snapshot.contract_size), 1.0)
             if notional > settings.max_notional:
                 reasons.append("名义敞口超过风险预算")
-        if settings.max_open_orders is not None and len(tuple(snapshot.orders)) > settings.max_open_orders:
+        if settings.max_open_orders is not None and len(orders) > settings.max_open_orders:
             reasons.append("挂单数量超过风险预算")
 
         if equity is not None and state.high_watermark and settings.max_drawdown_ratio is not None:
@@ -124,7 +128,7 @@ class RiskCoordinator:
         if value is None:
             return None
         parsed = float(value)
-        return parsed if parsed > 0 else None
+        return parsed if isfinite(parsed) and parsed > 0 else None
 
     @staticmethod
     def _position_exposure(positions: Iterable[Any]) -> tuple[float, float]:
@@ -147,7 +151,7 @@ class RiskCoordinator:
                 float(getattr(order, "volume_current", getattr(order, "volume_initial", 0.0)) or 0.0),
             )
             direction = str(getattr(order, "direction", "")).lower()
-            order_type = int(getattr(order, "type", -1) or -1)
+            order_type = int(getattr(order, "type", -1))
             if direction in {"buy", "long"} or order_type in {0, 2, 4, 6}:
                 long_volume += volume
             elif direction in {"sell", "short"} or order_type in {1, 3, 5, 7}:

@@ -40,13 +40,14 @@ class BreakoutStrategy(BaseStrategy):
             return self._hold_signal(bars, current_index, "breakout")
 
         # 仅使用已闭合的 K 线数据
-        tail = bars[max(0, current_index - lookback + 1) : current_index + 1]
+        confirmation = max(1, settings.breakout_confirmation_bars)
+        channel_end = current_index - confirmation + 1
+        tail = bars[max(0, channel_end - lookback) : channel_end]
         if len(tail) < lookback:
             return self._hold_signal(bars, current_index, "breakout")
 
         highs = np.array([float(b.high) for b in tail])
         lows = np.array([float(b.low) for b in tail])
-        confirmation = settings.breakout_confirmation_bars
         close_start = max(0, current_index - lookback - confirmation + 1)
         closes = np.fromiter(
             (float(b.close) for b in bars[close_start : current_index + 1]),
@@ -63,12 +64,8 @@ class BreakoutStrategy(BaseStrategy):
         atr_value = atr or (channel_high - channel_low) * 0.1
 
         # 确认突破：连续 confirmation_bars 根收盘价在通道外
-        confirmed_breakout_up = self._check_confirmation(
-            closes, lookback, confirmation, direction="up"
-        )
-        confirmed_breakout_down = self._check_confirmation(
-            closes, lookback, confirmation, direction="down"
-        )
+        confirmed_breakout_up = all(c > channel_high for c in closes[-confirmation:])
+        confirmed_breakout_down = all(c < channel_low for c in closes[-confirmation:])
 
         has_long = self.state.position > 0
         has_short = self.state.position < 0
@@ -141,8 +138,7 @@ class BreakoutStrategy(BaseStrategy):
         direction: str,
     ) -> bool:
         """检查突破确认：连续 N 根收盘价在通道外。"""
-        if confirmation_bars <= 1:
-            return True
+        confirmation_bars = max(1, confirmation_bars)
         if len(closes) < lookback + confirmation_bars:
             return False
 

@@ -1,0 +1,15 @@
+{
+  "magic": 260922,
+  "symbols": {"BTC": "BTCUSD", "ETH": "ETHUSD", "XAU": "XAUUSD"},
+  "parameters": {"spacing": 1.0, "levels": 3, "entry": 1.5, "stop": 3.0, "trend_adx": 25},
+  "risk": {
+    "max_leverage": 10.0,
+    "max_margin_usage": 0.5,
+    "max_drawdown": 0.25,
+    "max_daily_loss": 0.05,
+    "risk_per_trade": 0.01,
+    "max_asset_exposure": 2.0,
+    "max_portfolio_exposure": 3.0,
+    "maintenance_margin": 0.5
+  }
+}

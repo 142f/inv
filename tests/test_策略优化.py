@@ -154,7 +154,7 @@ class StrategyOptimizationTests(unittest.TestCase):
                 ]
 
         strategy = StateMachineStrategy()
-        BacktestEngine(commission_pct=0.0, slippage_pct=0.0).run(
+        BacktestEngine(initial_equity=100_000.0, commission_pct=0.0, slippage_pct=0.0).run(
             strategy,
             _bars(5),
             self.settings,

@@ -5,11 +5,6 @@ import os
 import sys
 import traceback
 
-from core.logger import Logger
-from core.broker import MT5Broker
-from core.infra import ConfigRepository
-from core.strategy.manager import StrategyManager
-from core.runtime import Runner
 
 
 def _env_numeric(env_name: str, caster, default):
@@ -22,6 +17,7 @@ def _env_numeric(env_name: str, caster, default):
     try:
         return caster(raw)
     except (TypeError, ValueError):
+        from core.logger import Logger
         Logger.log("系统", "警告", f"环境变量 {env_name}={raw!r} 非法，已回退默认值 {default}")
         return default
 
@@ -51,7 +47,13 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def main(argv=None):
+def legacy_main(argv=None):
+    """保留旧接口供显式兼容调用；默认入口使用无账户纸面运行。"""
+    from core.logger import Logger
+    from core.broker import MT5Broker
+    from core.infra import ConfigRepository
+    from core.strategy.manager import StrategyManager
+    from core.runtime import Runner
     args = parse_args(argv)
 
     broker = MT5Broker()
@@ -87,6 +89,11 @@ def main(argv=None):
         Logger.log("系统", "系统停止", "底层终端连接已断开，资源释放完毕")
 
     return 0
+
+
+def main(argv=None):
+    from 交易运行 import main as unified_main
+    return unified_main(argv)
 
 
 if __name__ == "__main__":

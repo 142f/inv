@@ -8,6 +8,7 @@ from __future__ import annotations
 from math import sqrt
 from statistics import fmean, pstdev
 from typing import Iterable
+import numpy as np
 
 from inv.domain.models import PerformanceMetrics, Trade
 
@@ -68,7 +69,9 @@ def calculate_metrics(
     turnover = sum(abs(trade.volume) for trade in trade_list)
     costs = sum(trade.cost for trade in trade_list)
     cost_ratio = costs / max(abs(net_profit) + costs, 1e-12)
-    risk_reward = net_profit / max(max_drawdown, 1e-12) if max_drawdown > 0 else 0.0
+    # 统一为无量纲收益/回撤，避免同策略仅因初始资金不同改变排序。
+    total_return = equity[-1]/equity[0]-1 if equity[0] > 0 else 0.0
+    risk_reward = total_return / max_drawdown if max_drawdown > 0 else 0.0
 
     # CVaR
     cvar = _cvar(returns, cvar_quantile)
@@ -77,7 +80,7 @@ def calculate_metrics(
     annualized_return = (
         (equity[-1] / equity[0]) ** (periods_per_year / max(len(equity) - 1, 1)) - 1.0
         if equity[0] > 0 and equity[-1] > 0 and len(equity) > 1
-        else 0.0
+        else (-1.0 if equity[0] > 0 and equity[-1] <= 0 else 0.0)
     )
 
     # Calmar 比率
@@ -127,8 +130,13 @@ def _cvar(returns: list[float], quantile: float) -> float:
         return 0.0
     q = min(1.0, max(0.0, float(quantile)))
     count = max(1, int(len(returns) * q))
-    worst = sorted(returns)[:count]
-    return abs(fmean(worst))
+    if len(returns) < 2048:
+        return abs(fmean(sorted(returns)[:count]))
+    # 只需最差尾部样本，无需 O(n log n) 全排序。
+    values = np.asarray(returns, dtype=float)
+    values.partition(count - 1)
+    worst = values[:count]
+    return abs(float(np.mean(worst)))
 
 
 def metrics_summary(metrics: PerformanceMetrics) -> str:

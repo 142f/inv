@@ -13,6 +13,7 @@ from core.domain import CommandAction, CommandResult, ExecutionMode, OrderComman
 
 DONE_RETCODE = 10009
 PLACED_RETCODE = 10008
+PARTIAL_RETCODE = 10010
 DISABLED_RETCODE = 10027
 
 
@@ -102,6 +103,7 @@ class ExecutionService:
         *,
         mode: ExecutionMode | str = ExecutionMode.PAPER,
         live_enabled: bool = False,
+        state_repository=None,
     ) -> None:
         self._broker = broker
         mode_value = mode.value if isinstance(mode, ExecutionMode) else str(mode).lower()
@@ -113,6 +115,9 @@ class ExecutionService:
         self._cycle_limits: dict[str, int] = {}
         self._live_permissions: dict[str, bool] = {}
         self._paper_sequence = 0
+        self._repository = state_repository
+        self._journal = state_repository.get("execution_journal") or {} if state_repository else {}
+        self._uncertain = {row["strategy_id"] for row in self._journal.values() if row["status"] == "unknown"}
 
     @property
     def mode(self) -> ExecutionMode:
@@ -133,9 +138,19 @@ class ExecutionService:
         """实盘许可由类型化风险配置授予，环境变量不能单独绕过。"""
         self._live_permissions[strategy_id] = bool(allowed)
 
-    def submit_native(self, request: Mapping[str, Any], *, strategy_id: str) -> NativeExecutionResult:
+    def submit_native(self, request: Mapping[str, Any], *, strategy_id: str, idempotency_key: str | None = None) -> NativeExecutionResult:
         normalized = dict(request)
-        identity = self._native_key(normalized, strategy_id)
+        live = self.is_live_permitted(strategy_id)
+        scope = f"{strategy_id}:{'live' if live else 'paper'}"
+        identity = self._native_key({"key": idempotency_key}, scope) if idempotency_key else self._native_key(normalized, scope)
+        recorded = self._journal.get(identity)
+        if recorded is not None:
+            return NativeExecutionResult(recorded['retcode'], "持久化命令已记录，禁止重复发送",
+                                         order=recorded.get('order', 0), duplicate=True,
+                                         simulated=not live)
+        reduction = int(normalized.get('action', 0)) in {6, 8} or bool(normalized.get('position'))
+        if live and strategy_id in self._uncertain and not reduction:
+            return NativeExecutionResult(DISABLED_RETCODE, "存在未确认订单，等待券商对账")
         prior = self._completed.get(identity)
         if prior is not None:
             self._completed.move_to_end(identity)
@@ -163,6 +178,8 @@ class ExecutionService:
             self._trim_completed()
             return result
 
+        # 先持久化未知状态，再调用券商；进程在调用中崩溃也不会盲目重发。
+        self._record(identity, strategy_id, "unknown", -1, 0)
         try:
             with self._broker.lock:
                 result = self._broker.order_send(normalized)
@@ -176,15 +193,18 @@ class ExecutionService:
             comment=str(getattr(result, "comment", "") or ""),
             order=int(getattr(result, "order", 0) or 0),
         )
-        if converted.retcode in {DONE_RETCODE, PLACED_RETCODE}:
+        if converted.retcode in {DONE_RETCODE, PLACED_RETCODE, PARTIAL_RETCODE}:
             self._completed[identity] = converted
             self._trim_completed()
+            self._record(identity, strategy_id, "accepted", converted.retcode, converted.order)
+        elif converted.retcode not in {-1, 10012, 10031}:
+            self._record(identity, strategy_id, "rejected", converted.retcode, converted.order)
         return converted
 
     def submit(self, command: OrderCommand) -> CommandResult:
-        result = self.submit_native(command.payload, strategy_id=command.strategy_id)
+        result = self.submit_native(command.payload, strategy_id=command.strategy_id, idempotency_key=command.idempotency_key)
         return CommandResult(
-            accepted=result.retcode in {DONE_RETCODE, PLACED_RETCODE},
+            accepted=result.retcode in {DONE_RETCODE, PLACED_RETCODE, PARTIAL_RETCODE},
             simulated=result.simulated,
             retcode=result.retcode,
             comment=result.comment,
@@ -194,9 +214,26 @@ class ExecutionService:
 
     @staticmethod
     def _native_key(request: Mapping[str, Any], strategy_id: str) -> str:
-        # [P-02] 用排序拼接替代 json.dumps+dict() 拷贝，减少序列化与 SHA-256 的输入构建开销
-        parts = "|".join(f"{k}={v}" for k, v in sorted(request.items()))
+        # 规范序列化防止分隔符碰撞，优先保证幂等身份正确。
+        parts = json.dumps(dict(request), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
         return hashlib.sha256(f"{strategy_id}|{parts}".encode("utf-8")).hexdigest()
+
+    def _record(self, identity, strategy_id, status, retcode, order):
+        self._journal[identity] = dict(strategy_id=strategy_id, status=status, retcode=retcode, order=order)
+        self._uncertain = {row['strategy_id'] for row in self._journal.values() if row['status'] == 'unknown'}
+        if self._repository is not None:
+            self._repository.set('execution_journal', self._journal)
+            flush = getattr(self._repository, 'flush', None)
+            if flush is not None:
+                flush()
+
+    def reconcile_confirmed(self, request, strategy_id, result, *, idempotency_key=None):
+        """仅供适配器取得券商确定回执后解除未知状态，不以查无记录推断失败。"""
+        scope = f"{strategy_id}:live"
+        identity = self._native_key({'key': idempotency_key}, scope) if idempotency_key else self._native_key(request, scope)
+        if result.retcode not in {DONE_RETCODE, PLACED_RETCODE, PARTIAL_RETCODE}:
+            raise ValueError('对账必须提供券商确认的接受回执')
+        self._record(identity, strategy_id, 'accepted', result.retcode, result.order)
 
     def _trim_completed(self) -> None:
         while len(self._completed) > self._max_completed:

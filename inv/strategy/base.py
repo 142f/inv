@@ -140,7 +140,7 @@ class BaseStrategy(ABC):
         risk_amount = equity * risk_per_trade
         price_risk = abs(price - stop_loss)
         if price_risk < 1e-12:
-            return symbol_spec.volume_min
+            return 0.0
         raw_volume = risk_amount / (price_risk * symbol_spec.contract_size)
         return symbol_spec.normalize_volume(raw_volume)
 
@@ -194,7 +194,7 @@ class CompositeStrategy(BaseStrategy):
                 elif sig.signal_type in (SignalType.SELL, SignalType.CLOSE_LONG):
                     sell_score += weight * sig.confidence
 
-        timestamp = self._resolve_timestamp(bars)
+        timestamp = self._get_timestamp(bars, current_index)
         threshold = 0.5
         if buy_score > sell_score and buy_score > threshold:
             return [Signal(
@@ -210,6 +210,12 @@ class CompositeStrategy(BaseStrategy):
             timestamp=timestamp, symbol=self.symbol,
             signal_type=SignalType.HOLD,
         )]
+
+    def reset_state(self) -> None:
+        """组合重复回测时同步清空子策略，避免跨实验状态污染。"""
+        super().reset_state()
+        for strategy in self.sub_strategies:
+            strategy.reset_state()
 
 
 __all__ = ["BaseStrategy", "StrategyState", "CompositeStrategy"]
